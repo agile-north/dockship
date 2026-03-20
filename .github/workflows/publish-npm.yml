@@ -1,0 +1,125 @@
+name: Publish to npm
+
+on:
+  push:
+    branches:
+      - develop
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Resolve package metadata
+        id: pkg
+        shell: bash
+        run: |
+          echo "name=$(node -p \"require('./package.json').name\")" >> "$GITHUB_OUTPUT"
+          echo "version=$(node -p \"require('./package.json').version\")" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve publish mode
+        id: mode
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$REF_NAME" = "main" ]; then
+              echo "dist_tag=latest" >> "$GITHUB_OUTPUT"
+              echo "publish_version=${{ steps.pkg.outputs.version }}" >> "$GITHUB_OUTPUT"
+              echo "publish_channel=stable" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            if [ "$REF_NAME" = "develop" ]; then
+              BASE_VERSION="${{ steps.pkg.outputs.version }}"
+              BASE_NUMERIC="${BASE_VERSION%%-*}"
+              SHORT_SHA="${GITHUB_SHA::7}"
+              PRE_VERSION="${BASE_NUMERIC}-dev.${GITHUB_RUN_NUMBER}.${SHORT_SHA}"
+
+              echo "dist_tag=next" >> "$GITHUB_OUTPUT"
+              echo "publish_version=${PRE_VERSION}" >> "$GITHUB_OUTPUT"
+              echo "publish_channel=prerelease" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            echo "Manual publish allowed only for refs: main (stable) or develop (prerelease). Current ref: ${REF_NAME}"
+            exit 1
+          fi
+
+          if [ "$REF_TYPE" = "tag" ]; then
+            echo "dist_tag=latest" >> "$GITHUB_OUTPUT"
+            echo "publish_version=${{ steps.pkg.outputs.version }}" >> "$GITHUB_OUTPUT"
+            echo "publish_channel=stable" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$REF_NAME" = "develop" ]; then
+            BASE_VERSION="${{ steps.pkg.outputs.version }}"
+            BASE_NUMERIC="${BASE_VERSION%%-*}"
+            SHORT_SHA="${GITHUB_SHA::7}"
+            PRE_VERSION="${BASE_NUMERIC}-dev.${GITHUB_RUN_NUMBER}.${SHORT_SHA}"
+
+            echo "dist_tag=next" >> "$GITHUB_OUTPUT"
+            echo "publish_version=${PRE_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "publish_channel=prerelease" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Unsupported ref for publishing: ${GITHUB_REF}"
+          exit 1
+
+      - name: Set prerelease package version
+        if: steps.mode.outputs.publish_channel == 'prerelease'
+        shell: bash
+        run: npm version "${{ steps.mode.outputs.publish_version }}" --no-git-tag-version --allow-same-version
+
+      - name: Check if version already exists on npm
+        id: check
+        shell: bash
+        run: |
+          set +e
+          npm view "${{ steps.pkg.outputs.name }}@${{ steps.mode.outputs.publish_version }}" version >/dev/null 2>&1
+          EXISTS=$?
+          set -e
+
+          if [ "$EXISTS" -eq 0 ]; then
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            echo "Version already published, skipping."
+          else
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            echo "Version not found on npm, publishing."
+          fi
+
+      - name: Publish package
+        if: steps.check.outputs.should_publish == 'true'
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
+        run: |
+          if [ -n "${NPM_TOKEN:-}" ]; then
+            echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+          fi
+
+          npm publish --access public --provenance --tag "${{ steps.mode.outputs.dist_tag }}"

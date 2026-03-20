@@ -1,0 +1,41 @@
+{
+  "stack": "dotnet",
+
+  "docker": {
+    "dockerfile": "Dockerfile",
+    "context": ".",
+    "targetRegistry": "",
+    "targetRepository": "",
+    "pushEnabled": false,
+    "tagLatest": false,
+    "platform": "",
+    "buildArgs": ""
+  },
+
+  "version": {
+    "provider": "nbgv",
+    "allowAutoFallback": true,
+
+    "nbgv": {
+      "versionJsonFileName": "version.json",
+      "dotnetToolManifestRelativePath": ".config/dotnet-tools.json",
+      "allowToolRestore": true,
+      "allowGlobalCommand": true,
+      "requireVersionJson": true
+    },
+
+    "nodejs": {
+      "packageJsonPath": "package.json",
+      "mode": "git-height"
+    },
+
+    "dotnet": {
+      "mode": "git-height",
+      "mainAssemblyInfoFilePath": "",
+      "assemblyInfoFilePaths": [],
+      "versionInfoFilePaths": [],
+      "csprojFilePaths": [],
+      "autoDiscover": true
+    }
+  }
+}
