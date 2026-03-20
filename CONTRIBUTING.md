@@ -51,7 +51,7 @@ Open an issue at <https://github.com/agile-north/dockship/issues>.
 
 Include:
 
-- dockship version (`npm ls @nrth/dockship`)
+- dockship version (`npm ls @agile-north/dockship`)
 - Node.js version (`node -v`)
 - Minimal reproduction steps
 

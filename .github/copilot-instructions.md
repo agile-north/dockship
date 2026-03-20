@@ -1,6 +1,6 @@
 # Copilot Instructions – dockship
 
-`@nrth/dockship` is a Node.js CLI (`dock`) that standardizes Docker image versioning, building, and pushing across polyglot CI/CD pipelines.
+`@agile-north/dockship` is a Node.js CLI (`dock`) that standardizes Docker image versioning, building, and pushing across polyglot CI/CD pipelines.
 
 ## Architecture
 
@@ -41,7 +41,7 @@ Required fields on the returned object: `source`, `version`, `full`, `major`, `m
 **Provider resolution order** (in `lib/version/index.cjs` `loadProvider`):
 
 1. Bundled path: `lib/version/providers/<name>/index.cjs`
-2. Scoped npm package: `@nrth/docker-ci-provider-<name>`
+2. Scoped npm package: `@agile-north/docker-ci-provider-<name>`
 3. Custom package: `providerConfig.providerPackage`
 
 The `nodejs` and `dotnet` providers are **self-contained** (inline all helpers). The `nbgv` provider re-uses the shared `fs.cjs`, `process.cjs`, and `model.cjs` modules. Match this pattern when adding new built-in providers. Likely future built-in providers: `python`, `gradle`, `maven`, `go`, `rust`.

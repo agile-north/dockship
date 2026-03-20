@@ -24,7 +24,7 @@ labels: bug
 
 ## Environment
 
-- dockship version: <!-- npm ls @nrth/dockship -->
+- dockship version: <!-- npm ls @agile-north/dockship -->
 - Node.js version: <!-- node -v -->
 - OS:
 

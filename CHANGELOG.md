@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Features
 
-* initial release of @nrth/dockship 1.0.0 ([5e55198](https://github.com/agile-north/dockship/commit/5e55198026809b531919dfa7b9a7878f90021aa6))
+* initial release of @agile-north/dockship 1.0.0 ([5e55198](https://github.com/agile-north/dockship/commit/5e55198026809b531919dfa7b9a7878f90021aa6))
 
 
 ### Bug Fixes
@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Initial release of `@nrth/dockship`
+- Initial release of `@agile-north/dockship`
 - `dock build` — build Docker image with computed version tags
 - `dock ship` / `dock push` — push image to target registry
 - `dock all` — build and push in one step

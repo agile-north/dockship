@@ -2,10 +2,10 @@
 
 Opinionated Docker image versioning, building, and publishing for CI/CD pipelines.
 
-[![npm version](https://img.shields.io/npm/v/%40nrth%2Fdockship?logo=npm)](https://www.npmjs.com/package/@nrth/dockship)
-[![npm downloads](https://img.shields.io/npm/dm/%40nrth%2Fdockship?logo=npm)](https://www.npmjs.com/package/@nrth/dockship)
-[![license](https://img.shields.io/npm/l/%40nrth%2Fdockship)](https://github.com/agile-north/dockship/blob/main/LICENSE)
-[![node](https://img.shields.io/node/v/%40nrth%2Fdockship?logo=node.js)](https://www.npmjs.com/package/@nrth/dockship)
+[![npm version](https://img.shields.io/npm/v/%40agile-north%2Fdockship?logo=npm)](https://www.npmjs.com/package/@agile-north/dockship)
+[![npm downloads](https://img.shields.io/npm/dm/%40agile-north%2Fdockship?logo=npm)](https://www.npmjs.com/package/@agile-north/dockship)
+[![license](https://img.shields.io/npm/l/%40agile-north%2Fdockship)](https://github.com/agile-north/dockship/blob/main/LICENSE)
+[![node](https://img.shields.io/node/v/%40agile-north%2Fdockship?logo=node.js)](https://www.npmjs.com/package/@agile-north/dockship)
 [![CI](https://github.com/agile-north/dockship/actions/workflows/ci.yml/badge.svg)](https://github.com/agile-north/dockship/actions/workflows/ci.yml)
 [![Publish to npm](https://github.com/agile-north/dockship/actions/workflows/publish-npm.yml/badge.svg)](https://github.com/agile-north/dockship/actions/workflows/publish-npm.yml)
 
@@ -15,7 +15,7 @@ Source repository: [github.com/agile-north/dockship](https://github.com/agile-no
 
 ## What is dockship?
 
-`@nrth/dockship` is a lightweight CLI tool that standardizes Docker container builds across projects. It handles:
+`@agile-north/dockship` is a lightweight CLI tool that standardizes Docker container builds across projects. It handles:
 
 - **Semantic versioning** from multiple sources (Node.js, .NET, NBGV, custom providers)
 - **Multi-tag Docker builds** (version, major, major.minor, optional latest)
@@ -254,7 +254,7 @@ Appends Git commit count to semantic versions for unique build identifiers:
 Extend with custom version providers by installing separate packages:
 
 ```bash
-npm install -D @nrth/dockship-provider-python
+npm install -D @agile-north/dockship-provider-python
 ```
 
 Reference in `dockship.json`:
@@ -317,7 +317,7 @@ module.exports = {
 Add `.npmrc` to your client repo:
 
 ```ini
-@nrth:registry=https://npm.pkg.github.com
+@agile-north:registry=https://npm.pkg.github.com
 always-auth=true
 //npm.pkg.github.com/:_authToken=${NPM_TOKEN}
 ```
@@ -333,7 +333,7 @@ Set user-level env var (Windows PowerShell):
 Then install:
 
 ```bash
-npm i -D @nrth/dockship
+npm i -D @agile-north/dockship
 ```
 
 ## CI/CD Integration
@@ -454,7 +454,7 @@ Version from Node.js:
 - `DOCKER_TARGET_REPOSITORY` – override repository
 - `DOCKER_PUSH_ENABLED` – "true"/"false", override push setting
 - `DOCKER_TAG_LATEST` – "true"/"false", add latest tag
-- `NPM_TOKEN` – for private npm (if using @nrth providers)
+- `NPM_TOKEN` – for private npm (if using @agile-north providers)
 
 ### Provider-Specific
 
@@ -466,7 +466,7 @@ Version from Node.js:
 ### "Provider not found"
 
 - Check `version.provider` in `dockship.json` matches an installed provider name
-- For external: ensure installed with `npm ls @nrth/dockship-provider-<name>`
+- For external: ensure installed with `npm ls @agile-north/dockship-provider-<name>`
 
 ### "No version found"
 
