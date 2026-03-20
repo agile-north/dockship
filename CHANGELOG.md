@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0](https://github.com/agile-north/dockship/compare/dockship-v1.0.0...dockship-v1.1.0) (2026-03-20)
+
+
+### Features
+
+* initial release of @nrth/dockship 1.0.0 ([5e55198](https://github.com/agile-north/dockship/commit/5e55198026809b531919dfa7b9a7878f90021aa6))
+
+
+### Bug Fixes
+
+* add markdown lint fixes to copilot-instructions.md ([8efd024](https://github.com/agile-north/dockship/commit/8efd024726b25a8687ee3fcb2a931dc11b3c9adc))
+
 ## [Unreleased]
 
 ## [1.0.0] - 2026-03-20
