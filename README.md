@@ -28,7 +28,7 @@ Perfect for microservices, full-stack apps, and standardized CI/CD across teams.
 ## Installation
 
 ```bash
-npm install -D @nrth/dockship
+npm install -D @agile-north/dockship
 ```
 
 Then add to `package.json` scripts:
