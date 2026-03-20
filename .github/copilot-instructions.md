@@ -4,7 +4,7 @@
 
 ## Architecture
 
-```
+```text
 cli.cjs                          ← CLI entry point; handles all dock commands
 lib/version/index.cjs            ← Version resolution orchestrator (runs as subprocess)
 lib/version/model.cjs            ← Shared VersionInfo schema + validation helpers
@@ -39,6 +39,7 @@ module.exports = {
 Required fields on the returned object: `source`, `version`, `full`, `major`, `minor` (validated by `validateVersionInfo` in `model.cjs`).
 
 **Provider resolution order** (in `lib/version/index.cjs` `loadProvider`):
+
 1. Bundled path: `lib/version/providers/<name>/index.cjs`
 2. Scoped npm package: `@nrth/docker-ci-provider-<name>`
 3. Custom package: `providerConfig.providerPackage`
