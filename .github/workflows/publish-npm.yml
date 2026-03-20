@@ -1,11 +1,11 @@
 name: Publish to npm
 
 on:
+  release:
+    types: [published]
   push:
     branches:
       - develop
-    tags:
-      - "v*.*.*"
   workflow_dispatch:
 
 permissions:
@@ -41,9 +41,15 @@ jobs:
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
-          REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
         run: |
+          if [ "$EVENT_NAME" = "release" ]; then
+            echo "dist_tag=latest" >> "$GITHUB_OUTPUT"
+            echo "publish_version=${{ steps.pkg.outputs.version }}" >> "$GITHUB_OUTPUT"
+            echo "publish_channel=stable" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             if [ "$REF_NAME" = "main" ]; then
               echo "dist_tag=latest" >> "$GITHUB_OUTPUT"
@@ -66,13 +72,6 @@ jobs:
 
             echo "Manual publish allowed only for refs: main (stable) or develop (prerelease). Current ref: ${REF_NAME}"
             exit 1
-          fi
-
-          if [ "$REF_TYPE" = "tag" ]; then
-            echo "dist_tag=latest" >> "$GITHUB_OUTPUT"
-            echo "publish_version=${{ steps.pkg.outputs.version }}" >> "$GITHUB_OUTPUT"
-            echo "publish_channel=stable" >> "$GITHUB_OUTPUT"
-            exit 0
           fi
 
           if [ "$REF_NAME" = "develop" ]; then
