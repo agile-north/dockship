@@ -24,8 +24,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * add markdown lint fixes to copilot-instructions.md ([8efd024](https://github.com/agile-north/dockship/commit/8efd024726b25a8687ee3fcb2a931dc11b3c9adc))
 
-## [Unreleased]
-
 ## [1.0.0] - 2026-03-20
 
 ### Added
@@ -45,5 +43,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub Actions workflows for CI validation and automated npm publishing
 - Branch-based publish channels: `main` → `latest`, `develop` → `next`
 
-[unreleased]: https://github.com/agile-north/dockship/compare/v1.0.0...HEAD
+[1.1.0]: https://github.com/agile-north/dockship/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/agile-north/dockship/releases/tag/v1.0.0
