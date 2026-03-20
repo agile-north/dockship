@@ -7,7 +7,7 @@ Opinionated Docker image versioning, building, and publishing for CI/CD pipeline
 [![license](https://img.shields.io/npm/l/%40agile-north%2Fdockship)](https://github.com/agile-north/dockship/blob/main/LICENSE)
 [![node](https://img.shields.io/node/v/%40agile-north%2Fdockship?logo=node.js)](https://www.npmjs.com/package/@agile-north/dockship)
 [![CI](https://github.com/agile-north/dockship/actions/workflows/ci.yml/badge.svg)](https://github.com/agile-north/dockship/actions/workflows/ci.yml)
-[![Publish to npm](https://github.com/agile-north/dockship/actions/workflows/publish-npm.yml/badge.svg)](https://github.com/agile-north/dockship/actions/workflows/publish-npm.yml)
+[![Release](https://github.com/agile-north/dockship/actions/workflows/release.yml/badge.svg)](https://github.com/agile-north/dockship/actions/workflows/release.yml)
 
 Source repository: [github.com/agile-north/dockship](https://github.com/agile-north/dockship)
 
@@ -45,23 +45,23 @@ Then add to `package.json` scripts:
 
 ## Automated npm publish (GitHub Actions)
 
-This repo includes a publish workflow at `.github/workflows/publish-npm.yml`.
+This repo includes a release workflow at `.github/workflows/release.yml`.
 
-- Triggers on pushes to `develop` and Git tags like `v1.2.3` (created automatically by release-please)
+- Triggers on pushes to `main` and `develop`
 - Can also be run manually with **workflow_dispatch**
 - Skips publishing when that exact package version already exists on npm
 
 ## Version management
 
 Versioning is automated by [release-please](https://github.com/googleapis/release-please)
-via `.github/workflows/release-please.yml`.
+via `.github/workflows/release.yml`.
 
 How it works:
 
 1. Merge PRs into `main` using [Conventional Commits](https://www.conventionalcommits.org/) (see [CONTRIBUTING.md](CONTRIBUTING.md))
 2. release-please detects `feat:`, `fix:`, `perf:` commits and opens a **Release PR** that bumps `package.json` version and updates `CHANGELOG.md`
 3. Review and merge the Release PR
-4. release-please creates a `v*.*.*` tag, which triggers the publish workflow and pushes to npm `latest`
+4. release-please sets `release_created=true`, which runs the inline publish job and pushes to npm `latest`
 
 Version bump rules (SemVer):
 
@@ -71,13 +71,13 @@ Version bump rules (SemVer):
 
 Branch/channel behavior:
 
-- `v*.*.*` tag (from Release PR merge) → stable publish to npm `latest`
+- Release PR merged to `main` with `release_created=true` → stable publish to npm `latest`
 - `develop` push → prerelease publish to npm `next` (`X.Y.Z-dev.<run>.<sha>`)
 - manual `workflow_dispatch` → only `main` (stable) or `develop` (prerelease); other refs are rejected
 
 Allowed publish routes (enforced):
 
-- Push tag matching `v*.*.*` (release-please) → stable publish
+- Release PR merged on `main` (`release_created=true`) → stable publish
 - Push to `develop` → prerelease publish
 - Manual run on `main` or `develop` only → stable/prerelease respectively
 - Direct push to `main` → not a publish route
@@ -86,7 +86,7 @@ CI validation:
 
 - `.github/workflows/ci.yml` runs on PRs and pushes to `main`, `develop`, and `feature/**`
 - It validates installability and npm package metadata using dry-run checks
-- Configure branch protection on `main` and require status check **CI / validate** before merge
+- Configure branch protection on `main` and require status checks **CI / validate** and **PR Title / conventional-pr-title** before merge
 
 Authentication options:
 

@@ -77,12 +77,12 @@ The workflow runs on PRs and pushes to `main`, `develop`, and `feature/**`.
 
 ## Release workflow
 
-Versioning is automated by [release-please](https://github.com/googleapis/release-please) (`.github/workflows/release-please.yml`).
+Versioning is automated by [release-please](https://github.com/googleapis/release-please) (`.github/workflows/release.yml`).
 
 1. Merge feature PRs into `main` using [Conventional Commits](https://www.conventionalcommits.org/)
 2. release-please detects `feat:`, `fix:`, `perf:` commits and opens a Release PR (bumps `package.json` + `CHANGELOG.md`)
 3. Review and merge the Release PR
-4. release-please creates `v*.*.*` tag → publish workflow fires → npm `latest`
+4. release-please sets `release_created=true` → inline publish job runs → npm `latest`
 
 for prerelease testing: push to `develop` → auto-publishes to npm `next`
 
@@ -90,7 +90,7 @@ for prerelease testing: push to `develop` → auto-publishes to npm `next`
 
 | Trigger | npm tag | Version format |
 |---|---|---|
-| `v*.*.*` tag (from Release PR merge) | `latest` | from release-please (`package.json` bump) |
+| Merge Release PR to `main` (`release_created=true`) | `latest` | from release-please (`package.json` bump) |
 | Push to `develop` | `next` | `X.Y.Z-dev.<run>.<sha>` |
 | `workflow_dispatch` on `main` | `latest` | from `package.json` |
 | `workflow_dispatch` on `develop` | `next` | `X.Y.Z-dev.<run>.<sha>` |

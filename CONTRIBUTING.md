@@ -33,6 +33,8 @@ Work on a `feature/*` branch and open a pull request targeting **`develop`**.
 4. Update [CHANGELOG.md](CHANGELOG.md) under the `[Unreleased]` section.
 5. PRs into `develop` are merged by maintainers; `develop` → `main` releases are gated.
 6. When you're ready to release, merge into `main` and release-please will handle versioning (see [README.md](README.md#version-management)).
+7. Use a Conventional Commit-style PR title (validated by `.github/workflows/pr-title.yml`).
+8. Prefer **Squash and merge** so the final commit message in `main` matches the reviewed PR title.
 
 ## Commit messages
 
