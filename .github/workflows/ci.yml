@@ -40,6 +40,7 @@ jobs:
         with:
           globs: |
             **/*.md
+            !CHANGELOG.md
 
       - name: Validate package tarball
         run: npm pack --dry-run
