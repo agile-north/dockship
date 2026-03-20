@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.5](https://github.com/agile-north/dockship/compare/v1.1.4...v1.1.5) (2026-03-20)
+
+
+### Bug Fixes
+
+* use inputs.dist_tag presence to detect workflow_call stable publish ([700f826](https://github.com/agile-north/dockship/commit/700f82678bc7f0d0c34deb5fc5026652cf5c0dfb))
+
 ## [1.1.4](https://github.com/agile-north/dockship/compare/v1.1.3...v1.1.4) (2026-03-20)
 
 
