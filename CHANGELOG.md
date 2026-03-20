@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.3](https://github.com/agile-north/dockship/compare/v1.1.2...v1.1.3) (2026-03-20)
+
+
+### Bug Fixes
+
+* consolidate publishing into publish-npm.yml via release event trigger ([bce0711](https://github.com/agile-north/dockship/commit/bce07116e924c09c760de4e871d7c55b016ccfd9))
+* publish from release-please workflow on release creation ([f44b8f0](https://github.com/agile-north/dockship/commit/f44b8f0c26d3c1fe4cd3022ad3ee94e1b89e68b9))
+
 ## [1.1.2](https://github.com/agile-north/dockship/compare/v1.1.1...v1.1.2) (2026-03-20)
 
 
