@@ -90,8 +90,7 @@ CI validation:
 
 Authentication options:
 
-- Trusted publishing (recommended): configure this GitHub repo as a trusted publisher in npm settings; no `NPM_TOKEN` secret is required.
-- Token-based publishing: create an npm automation token and add it as repository secret `NPM_TOKEN`.
+- Trusted publishing: configure this GitHub repo as a trusted publisher in npm settings; no `NPM_TOKEN` secret is required for package publish.
 
 ## Quick Start
 
