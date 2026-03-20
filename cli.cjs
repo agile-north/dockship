@@ -172,7 +172,7 @@ function execCapture(command, args, options = {}) {
 //
 
 function getVersion(repoRoot) {
-  const scriptPath = path.join(repoRoot, ...VERSION_SCRIPT_PATH);
+  const scriptPath = path.join(__dirname, ...VERSION_SCRIPT_PATH);
 
   if (!fileExists(scriptPath)) {
     throw new Error(`Missing version script: ${scriptPath}`);
