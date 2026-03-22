@@ -1,5 +1,6 @@
 const assert = require("assert/strict");
 const cp = require("child_process");
+const fs = require("fs");
 const path = require("path");
 const test = require("node:test");
 
@@ -24,6 +25,13 @@ const CLI_ENV_KEYS = [
   "DOCKERFILE_PATH",
   "DOCKER_PLATFORM",
   "DOCKER_BUILD_ARGS",
+  "DOCKER_LOGIN_USERNAME",
+  "DOCKER_LOGIN_PASSWORD",
+  "DOCKER_LOGIN_REGISTRY",
+  "DOCKER_AUTH_USERNAME",
+  "DOCKER_AUTH_PASSWORD",
+  "DOCKER_AUTH_REGISTRY",
+  "DOCKER_CONFIG",
   "GITHUB_HEAD_REF",
   "GITHUB_REF_NAME",
   "BUILD_SOURCEBRANCHNAME",
@@ -51,12 +59,19 @@ function runCliMain(repoRoot, command, options = {}) {
   const stdout = [];
   const stderr = [];
   const dockerCommands = [];
+  const dockerInvocations = [];
 
   delete require.cache[CLI_MODULE_PATH];
 
   cp.spawnSync = (spawnCommand, args, spawnOptions = {}) => {
     if (spawnCommand === "docker") {
       dockerCommands.push(args);
+      dockerInvocations.push({
+        args,
+        cwd: spawnOptions.cwd,
+        env: spawnOptions.env || process.env,
+        input: spawnOptions.input
+      });
       return {
         status: 0,
         stdout: "",
@@ -92,14 +107,16 @@ function runCliMain(repoRoot, command, options = {}) {
       status: 0,
       stdout: stdout.join("\n"),
       stderr: stderr.join("\n"),
-      dockerCommands
+      dockerCommands,
+      dockerInvocations
     };
   } catch (error) {
     return {
       status: 1,
       stdout: stdout.join("\n"),
       stderr: [stderr.join("\n"), error && error.message ? error.message : String(error)].filter(Boolean).join("\n"),
-      dockerCommands
+      dockerCommands,
+      dockerInvocations
     };
   } finally {
     cp.spawnSync = originalSpawnSync;
@@ -274,4 +291,113 @@ test("build command loads docker settings from .env", t => {
   assert.equal(result.dockerCommands.length, 1);
   assert.ok(result.dockerCommands[0].includes("env.example.com/team/service:1.2.3"));
   assert.ok(result.dockerCommands[0].includes("env.example.com/team/service:latest"));
+});
+
+test("build command uses isolated docker login when login env vars are provided", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, "build", {
+    env: {
+      DOCKER_LOGIN_USERNAME: "ci-user",
+      DOCKER_LOGIN_PASSWORD: "secret-token"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected cli build command to succeed");
+  assert.equal(result.dockerCommands.length, 2);
+  assert.deepEqual(result.dockerCommands[0], ["login", "ghcr.io", "--username", "ci-user", "--password-stdin"]);
+  assert.equal(result.dockerCommands[1][0], "build");
+  assert.equal(result.dockerInvocations[0].input, "secret-token\n");
+  assert.equal(result.dockerInvocations[0].env.DOCKER_CONFIG, result.dockerInvocations[1].env.DOCKER_CONFIG);
+  assert.ok(result.dockerInvocations[0].env.DOCKER_CONFIG);
+  assert.equal(fs.existsSync(result.dockerInvocations[0].env.DOCKER_CONFIG), false);
+});
+
+test("build command rejects partial docker login configuration", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, "build", {
+    env: {
+      DOCKER_LOGIN_USERNAME: "ci-user"
+    }
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /DOCKER_LOGIN_USERNAME and DOCKER_LOGIN_PASSWORD must both be set/);
+  assert.deepEqual(result.dockerCommands, []);
+});
+
+test("build command still supports legacy docker auth env vars", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, "build", {
+    env: {
+      DOCKER_AUTH_USERNAME: "ci-user",
+      DOCKER_AUTH_PASSWORD: "secret-token"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected cli build command to succeed");
+  assert.deepEqual(result.dockerCommands[0], ["login", "ghcr.io", "--username", "ci-user", "--password-stdin"]);
+});
+
+test("build command uses docker.login.registry from config as login default", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      },
+      login: {
+        registry: "registry.internal.example"
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, "build", {
+    env: {
+      DOCKER_LOGIN_USERNAME: "ci-user",
+      DOCKER_LOGIN_PASSWORD: "secret-token"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected cli build command to succeed");
+  assert.deepEqual(result.dockerCommands[0], ["login", "registry.internal.example", "--username", "ci-user", "--password-stdin"]);
 });

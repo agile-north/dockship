@@ -17,6 +17,8 @@ const {
 const SAMPLE_PACKAGE_NAME = "sample-app";
 const PROCESS_MODULE_PATH = require.resolve("../lib/version/process.cjs");
 const NBGV_PROVIDER_PATH = require.resolve("../lib/version/providers/nbgv/index.cjs");
+const DOTNET_PROVIDER_PATH = require.resolve("../lib/version/providers/dotnet/index.cjs");
+const envProvider = require("../lib/version/providers/env/index.cjs");
 
 function createBinDir(repoRoot) {
   return path.join(repoRoot, ".test-bin");
@@ -72,6 +74,40 @@ function withMockedNbgvProvider(processExports, callback) {
 
     if (originalProviderModule) {
       require.cache[NBGV_PROVIDER_PATH] = originalProviderModule;
+    }
+  }
+}
+
+function withMockedDotnetProvider(processExports, callback) {
+  const originalProcessModule = require.cache[PROCESS_MODULE_PATH];
+  const originalProviderModule = require.cache[DOTNET_PROVIDER_PATH];
+  const baseProcessExports = require("../lib/version/process.cjs");
+
+  delete require.cache[DOTNET_PROVIDER_PATH];
+  require.cache[PROCESS_MODULE_PATH] = {
+    id: PROCESS_MODULE_PATH,
+    filename: PROCESS_MODULE_PATH,
+    loaded: true,
+    exports: {
+      ...baseProcessExports,
+      ...processExports
+    }
+  };
+
+  try {
+    const provider = require(DOTNET_PROVIDER_PATH);
+    return callback(provider);
+  } finally {
+    delete require.cache[DOTNET_PROVIDER_PATH];
+
+    if (originalProcessModule) {
+      require.cache[PROCESS_MODULE_PATH] = originalProcessModule;
+    } else {
+      delete require.cache[PROCESS_MODULE_PATH];
+    }
+
+    if (originalProviderModule) {
+      require.cache[DOTNET_PROVIDER_PATH] = originalProviderModule;
     }
   }
 }
@@ -197,17 +233,21 @@ test("dotnet provider prefers csproj files during autodiscovery", t => {
 [assembly: AssemblyFileVersion("9.9.9")]
 `);
 
-  const versionInfo = dotnetProvider.resolveVersion({
+  const versionInfo = withMockedDotnetProvider({
+    commandExists() {
+      return false;
+    }
+  }, provider => provider.resolveVersion({
     repoRoot,
     providerConfig: {
       autoDiscover: true,
-      mode: dotnetProvider.MODE_FIXED
+      mode: provider.MODE_FIXED
     },
     env: {}
-  });
+  }));
 
   assertVersionFields(versionInfo, {
-    source: "dotnet-csproj",
+    source: "dotnet-project",
     version: "2.3.4-beta",
     full: "2.3.4",
     major: "2",
@@ -230,17 +270,21 @@ test("dotnet provider appends git height for git-height mode", t => {
 
   initializeGitRepo(repoRoot);
 
-  const versionInfo = dotnetProvider.resolveVersion({
+  const versionInfo = withMockedDotnetProvider({
+    commandExists() {
+      return false;
+    }
+  }, provider => provider.resolveVersion({
     repoRoot,
     providerConfig: {
       autoDiscover: true,
-      mode: dotnetProvider.MODE_GIT_HEIGHT
+      mode: provider.MODE_GIT_HEIGHT
     },
     env: process.env
-  });
+  }));
 
   assertVersionFields(versionInfo, {
-    source: "dotnet-csproj",
+    source: "dotnet-project",
     version: "3.4.5.1-feature-test-branch",
     full: "3.4.5.1",
     major: "3",
@@ -254,15 +298,132 @@ test("dotnet provider throws when no version source files exist", t => {
   const repoRoot = createTempRepo(t);
 
   assert.throws(() => {
-    dotnetProvider.resolveVersion({
+    withMockedDotnetProvider({
+      commandExists() {
+        return false;
+      }
+    }, provider => provider.resolveVersion({
       repoRoot,
       providerConfig: {
         autoDiscover: true,
-        mode: dotnetProvider.MODE_FIXED
+        mode: provider.MODE_FIXED
       },
       env: {}
-    });
+    }));
   }, /No dotnet version source files were found/);
+});
+
+test("dotnet provider evaluates vbproj files through dotnet msbuild preprocessing", t => {
+  const repoRoot = createTempRepo(t);
+
+  writeText(path.join(repoRoot, "src", "App", "App.vbproj"), `
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="..\\..\\Directory.Build.props" />
+</Project>
+`);
+
+  writeText(path.join(repoRoot, "Directory.Build.props"), `
+<Project>
+  <PropertyGroup>
+    <Version>1.0.0-local</Version>
+  </PropertyGroup>
+</Project>
+`);
+
+  const versionInfo = withMockedDotnetProvider({
+    commandExists(command) {
+      return command === "dotnet";
+    },
+    tryExec(command, args) {
+      if (command !== "dotnet") {
+        return require("../lib/version/process.cjs").tryExec(command, args);
+      }
+
+      const preprocessArg = args.find(arg => arg.startsWith("-pp:"));
+      const preprocessPath = preprocessArg.slice(4);
+
+      writeText(preprocessPath, `
+<Project>
+  <PropertyGroup>
+    <VersionPrefix>8.1.0</VersionPrefix>
+    <VersionSuffix>rc.2</VersionSuffix>
+    <AssemblyVersion>8.1.0.0</AssemblyVersion>
+    <InformationalVersion>8.1.0-rc.2+sha.123</InformationalVersion>
+    <PackageVersion>8.1.0-rc.2</PackageVersion>
+  </PropertyGroup>
+</Project>
+`);
+
+      return {
+        ok: true,
+        status: 0,
+        stdout: "",
+        stderr: "",
+        error: null
+      };
+    }
+  }, provider => provider.resolveVersion({
+    repoRoot,
+    providerConfig: {
+      autoDiscover: true,
+      mode: provider.MODE_FIXED
+    },
+    env: {}
+  }));
+
+  assertVersionFields(versionInfo, {
+    source: "dotnet-project",
+    version: "8.1.0-rc.2",
+    full: "8.1.0",
+    major: "8",
+    minor: "1",
+    build: "0",
+    suffix: "-rc.2",
+    assemblyVersion: "8.1.0.0",
+    informationalVersion: "8.1.0-rc.2+sha.123",
+    nuGetPackageVersion: "8.1.0-rc.2"
+  });
+});
+
+test("dotnet provider falls back to Directory.Build.props when project evaluation is unavailable", t => {
+  const repoRoot = createTempRepo(t);
+
+  writeText(path.join(repoRoot, "src", "App", "App.fsproj"), `
+<Project Sdk="Microsoft.NET.Sdk">
+</Project>
+`);
+
+  writeText(path.join(repoRoot, "Directory.Build.props"), `
+<Project>
+  <PropertyGroup>
+    <VersionPrefix>6.7.8</VersionPrefix>
+    <VersionSuffix>preview.1</VersionSuffix>
+  </PropertyGroup>
+</Project>
+`);
+
+  const versionInfo = withMockedDotnetProvider({
+    commandExists() {
+      return false;
+    }
+  }, provider => provider.resolveVersion({
+    repoRoot,
+    providerConfig: {
+      autoDiscover: true,
+      mode: provider.MODE_FIXED
+    },
+    env: {}
+  }));
+
+  assertVersionFields(versionInfo, {
+    source: "dotnet-msbuild",
+    version: "6.7.8-preview.1",
+    full: "6.7.8",
+    major: "6",
+    minor: "7",
+    build: "8",
+    suffix: "-preview.1"
+  });
 });
 
 test("nbgv provider resolves versions through docker output", t => {
@@ -368,4 +529,208 @@ test("version orchestration auto-detects nodejs when package.json is present", t
     minor: "5",
     build: "6"
   });
+});
+
+test("version orchestration auto-detects dotnet for vbproj repos", t => {
+  const repoRoot = createTempRepo(t);
+
+  writeText(path.join(repoRoot, "src", "App", "App.vbproj"), `
+<Project Sdk="Microsoft.NET.Sdk">
+</Project>
+`);
+
+  const context = versionIndex.buildContext(repoRoot);
+  const versionInfo = withMockedBundledProvider(DOTNET_PROVIDER_PATH, {
+    resolveVersion() {
+      return {
+        source: "dotnet-project",
+        version: "7.8.9",
+        full: "7.8.9",
+        major: "7",
+        minor: "8",
+        build: "9",
+        suffix: "",
+        semVer2: "7.8.9",
+        assemblyVersion: "",
+        informationalVersion: "",
+        nuGetPackageVersion: ""
+      };
+    }
+  }, () => versionIndex.resolveVersion(context));
+
+  assertVersionFields(versionInfo, {
+    source: "dotnet-project",
+    version: "7.8.9"
+  });
+});
+
+test("env provider resolves version from DOCKSHIP_VERSION env var", () => {
+  const versionInfo = envProvider.resolveVersion({
+    repoRoot: "/irrelevant",
+    providerConfig: {},
+    env: { DOCKSHIP_VERSION: "3.14.1-rc.2" }
+  });
+
+  assertVersionFields(versionInfo, {
+    source: "env",
+    version: "3.14.1-rc.2",
+    full: "3.14.1",
+    major: "3",
+    minor: "14",
+    build: "1",
+    suffix: "-rc.2",
+    semVer2: "3.14.1-rc.2"
+  });
+});
+
+test("env provider resolves version from inline config value", () => {
+  const versionInfo = envProvider.resolveVersion({
+    repoRoot: "/irrelevant",
+    providerConfig: { version: "5.0.0" },
+    env: {}
+  });
+
+  assertVersionFields(versionInfo, {
+    source: "env",
+    version: "5.0.0",
+    full: "5.0.0",
+    major: "5",
+    minor: "0",
+    build: "0"
+  });
+});
+
+test("env provider inline config version takes priority over env var", () => {
+  const versionInfo = envProvider.resolveVersion({
+    repoRoot: "/irrelevant",
+    providerConfig: { version: "9.9.9" },
+    env: { DOCKSHIP_VERSION: "1.0.0" }
+  });
+
+  assertVersionFields(versionInfo, { source: "env", version: "9.9.9" });
+});
+
+test("env provider uses a custom variable name when versionVar is configured", () => {
+  const versionInfo = envProvider.resolveVersion({
+    repoRoot: "/irrelevant",
+    providerConfig: { versionVar: "MY_BUILD_VERSION" },
+    env: { MY_BUILD_VERSION: "2.3.4-alpha.1" }
+  });
+
+  assertVersionFields(versionInfo, {
+    source: "env",
+    version: "2.3.4-alpha.1",
+    major: "2",
+    minor: "3"
+  });
+});
+
+test("env provider throws when no version is available", () => {
+  assert.throws(() => {
+    envProvider.resolveVersion({
+      repoRoot: "/irrelevant",
+      providerConfig: {},
+      env: {}
+    });
+  }, /DOCKSHIP_VERSION/);
+});
+
+test("env provider throws on invalid version string", () => {
+  assert.throws(() => {
+    envProvider.resolveVersion({
+      repoRoot: "/irrelevant",
+      providerConfig: {},
+      env: { DOCKSHIP_VERSION: "not-a-version" }
+    });
+  }, /not a valid version/);
+});
+
+test("version orchestration auto-detects env provider as last resort when DOCKSHIP_VERSION is set", t => {
+  const repoRoot = createTempRepo(t);
+
+  const context = {
+    ...versionIndex.buildContext(repoRoot),
+    env: { DOCKSHIP_VERSION: "4.5.6-ci.99" }
+  };
+
+  const versionInfo = versionIndex.resolveVersion(context);
+
+  assertVersionFields(versionInfo, {
+    source: "env",
+    version: "4.5.6-ci.99",
+    major: "4",
+    minor: "5"
+  });
+});
+
+test("version orchestration env provider does not shadow explicit providers already in chain", t => {
+  const repoRoot = createTempRepo(t);
+
+  writeJson(path.join(repoRoot, "package.json"), {
+    name: SAMPLE_PACKAGE_NAME,
+    version: "1.0.0"
+  });
+
+  const context = {
+    ...versionIndex.buildContext(repoRoot),
+    env: { DOCKSHIP_VERSION: "99.99.99" }
+  };
+
+  const versionInfo = versionIndex.resolveVersion(context);
+
+  assertVersionFields(versionInfo, { source: "nodejs", version: "1.0.0" });
+});
+
+test("version orchestration falls back to env when dotnet is detected but no version is found", t => {
+  const repoRoot = createTempRepo(t);
+
+  writeText(path.join(repoRoot, "App.csproj"), [
+    "<Project Sdk=\"Microsoft.NET.Sdk\">",
+    "  <PropertyGroup>",
+    "    <TargetFramework>net8.0</TargetFramework>",
+    "  </PropertyGroup>",
+    "</Project>"
+  ].join("\n"));
+
+  const context = {
+    ...versionIndex.buildContext(repoRoot),
+    env: { DOCKSHIP_VERSION: "8.1.0-ci.5" }
+  };
+
+  const versionInfo = versionIndex.resolveVersion(context);
+
+  assertVersionFields(versionInfo, {
+    source: "env",
+    version: "8.1.0-ci.5",
+    major: "8",
+    minor: "1"
+  });
+});
+
+test("custom provider loaded from relative path is resolved against repoRoot", t => {
+  const repoRoot = createTempRepo(t);
+
+  // Write a minimal provider file into the client repo
+  writeText(path.join(repoRoot, "my-version-provider.cjs"), [
+    '"use strict";',
+    'module.exports = {',
+    '  resolveVersion() {',
+    '    return { source: "custom-relative", version: "7.8.9", full: "7.8.9", major: "7", minor: "8", build: "9", suffix: "", semVer2: "7.8.9", assemblyVersion: "", informationalVersion: "", nuGetPackageVersion: "" };',
+    '  }',
+    '};'
+  ].join("\n"));
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    version: {
+      provider: "custom-relative",
+      "custom-relative": {
+        providerPackage: "./my-version-provider.cjs"
+      }
+    }
+  });
+
+  const context = versionIndex.buildContext(repoRoot);
+  const versionInfo = versionIndex.resolveVersion(context);
+
+  assertVersionFields(versionInfo, { source: "custom-relative", version: "7.8.9", major: "7", minor: "8" });
 });

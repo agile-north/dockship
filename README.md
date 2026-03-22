@@ -111,6 +111,9 @@ Authentication options:
       "registry": "registry.example.com",
       "repository": "my-org/my-app"
     },
+    "login": {
+      "registry": "registry.example.com"
+    },
     "push": {
       "enabled": false,
       "branches": ["main", "develop"]
@@ -193,6 +196,9 @@ Configuration precedence is:
       "registry": "registry.io",           // Docker registry
       "repository": "org/app"              // Image repository
     },
+    "login": {
+      "registry": "registry.io"            // Optional: login registry override
+    },
     "push": {
       "enabled": false,                     // Enable/disable push
       "branches": ["main", "develop"]    // Optional: allowed branches, supports *
@@ -214,11 +220,26 @@ Configuration precedence is:
 | `docker.context` | string | `.` | `DOCKER_CONTEXT` | Docker build context |
 | `docker.target.registry` | string | empty | `DOCKER_TARGET_REGISTRY` | Required for `dock build`, `dock ship`, and `dock all` |
 | `docker.target.repository` | string | empty | `DOCKER_TARGET_REPOSITORY` | Required for `dock build`, `dock ship`, and `dock all` |
+| `docker.login.registry` | string | empty | `DOCKER_LOGIN_REGISTRY` | Optional login registry override; defaults to `docker.target.registry` |
 | `docker.push.enabled` | boolean | `false` | `DOCKER_PUSH_ENABLED` | Enables pushing for `dock ship` and `dock all` |
 | `docker.push.branches` | string[] | `[]` | `DOCKER_PUSH_BRANCHES` | Branch allow-list; supports `*` wildcards |
 | `docker.tags.latest` | boolean | `false` | `DOCKER_TAG_LATEST` | Adds the `latest` tag in addition to semantic tags |
 | `docker.platform` | string | empty | `DOCKER_PLATFORM` | Passed to `docker build --platform` |
 | `docker.buildArgs` | object | `{}` | `DOCKER_BUILD_ARGS` | Key/value pairs passed as `--build-arg KEY=value`; appended before the auto-generated `APP_VERSION` build arg. Env var accepts JSON (`{"K":"v"}`) or semicolon-delimited `KEY=value;KEY2=value2` |
+
+Optional registry login environment variables:
+
+- `DOCKER_LOGIN_USERNAME`
+- `DOCKER_LOGIN_PASSWORD`
+- `DOCKER_LOGIN_REGISTRY` (defaults to `docker.login.registry`, then `DOCKER_TARGET_REGISTRY`)
+
+When `DOCKER_LOGIN_USERNAME` and `DOCKER_LOGIN_PASSWORD` are set, dockship creates a temporary isolated Docker config, runs `docker login` for that invocation, and removes the temporary config afterward. This avoids changing the user's normal Docker login state.
+
+Legacy aliases remain supported for compatibility:
+
+- `DOCKER_AUTH_USERNAME`
+- `DOCKER_AUTH_PASSWORD`
+- `DOCKER_AUTH_REGISTRY`
 
 `dock ship` and `dock all` only push when both of these are true:
 
@@ -239,6 +260,7 @@ Legacy flat keys are still accepted for compatibility:
 - `docker.dockerfile` → `docker.file`
 - `docker.targetRegistry` → `docker.target.registry`
 - `docker.targetRepository` → `docker.target.repository`
+- `docker.loginRegistry` → `docker.login.registry`
 - `docker.pushEnabled` → `docker.push.enabled`
 - `docker.pushBranches` → `docker.push.branches`
 - `docker.tagLatest` → `docker.tags.latest`
@@ -250,16 +272,31 @@ Environment variable overrides (CI):
 - `DOCKER_PUSH_ENABLED`
 - `DOCKER_PUSH_BRANCHES`
 - `DOCKER_TAG_LATEST`
+- `DOCKER_LOGIN_USERNAME`
+- `DOCKER_LOGIN_PASSWORD`
+- `DOCKER_LOGIN_REGISTRY`
 
 ### Version Providers
 
-`version.provider` supports `"auto"`, `"nodejs"`, `"dotnet"`, and `"nbgv"`.
+`version.provider` supports `"auto"`, `"nodejs"`, `"dotnet"`, `"nbgv"`, `"env"`, and any custom provider name.
 
 When `version.provider` is `"auto"`, dockship uses this order:
 
 1. `version.json` → `nbgv`
 2. `package.json` → `nodejs`
-3. `.csproj`, `AssemblyInfo.cs`, or `VersionInfo.cs` → `dotnet`
+3. MSBuild and assembly metadata files → `dotnet`
+4. `DOCKSHIP_VERSION` env var → `env`
+
+If a provider selected by auto-detection fails to resolve a valid version, dockship will retry with `env` when `DOCKSHIP_VERSION` (or `version.env.version`) is available.
+
+The built-in `dotnet` provider auto-discovers:
+
+- `.csproj`, `.vbproj`, and `.fsproj`
+- `Directory.Build.props` and `Directory.Build.targets`
+- `VersionInfo.cs`, `VersionInfo.vb`, `VersionInfo.fs`
+- `AssemblyInfo.cs`, `AssemblyInfo.vb`, `AssemblyInfo.fs`
+
+When `dotnet` is available, project files are evaluated with `dotnet msbuild` preprocessing first so imported props and centrally managed version properties are respected. If that evaluation path is unavailable or does not yield a version, dockship falls back to scanning the discovered files directly.
 
 If no config file exists, dockship uses `"auto"` by default.
 
@@ -267,8 +304,8 @@ If no config file exists, dockship uses `"auto"` by default.
 
 | Setting | Type | Default | Description |
 | --- | --- | --- | --- |
-| `version.provider` | string | `auto` | Version provider name. Use `auto`, `nodejs`, `dotnet`, `nbgv`, or a custom provider name |
-| `version.<provider>.providerPackage` | string | empty | For custom providers, npm package name to load |
+| `version.provider` | string | `auto` | Version provider name. Use `auto`, `nodejs`, `dotnet`, `nbgv`, `env`, or a custom provider name |
+| `version.<provider>.providerPackage` | string | empty | npm package name or path to load for custom providers. Relative paths (starting with `./` or `../`) are resolved from the client repo root. |
 
 #### Node.js provider options
 
@@ -299,10 +336,11 @@ If no config file exists, dockship uses `"auto"` by default.
 | `version.dotnet.mainAssemblyInfoFilePath` | string | empty | `MAIN_ASSEMBLY_INFO_FILE_PATH` | Preferred explicit AssemblyInfo file |
 | `version.dotnet.assemblyInfoFilePaths` | string[] | `[]` | `ASSEMBLY_INFO_FILE_PATHS` | Additional AssemblyInfo file paths |
 | `version.dotnet.versionInfoFilePaths` | string[] | `[]` | `VERSION_INFO_FILE_PATHS` | Explicit VersionInfo file paths |
-| `version.dotnet.csprojFilePaths` | string[] | `[]` | `CSPROJ_FILE_PATHS` | Explicit `.csproj` file paths |
-| `version.dotnet.autoDiscover` | boolean | `true` | none | When `true`, scans the repo for `.csproj`, `VersionInfo.cs`, and `AssemblyInfo.cs` if explicit paths are not provided |
+| `version.dotnet.projectFilePaths` | string[] | `[]` | `PROJECT_FILE_PATHS` | Explicit project file paths for `.csproj`, `.vbproj`, or `.fsproj` |
+| `version.dotnet.csprojFilePaths` | string[] | `[]` | `CSPROJ_FILE_PATHS` | Legacy alias for explicit C# project file paths |
+| `version.dotnet.autoDiscover` | boolean | `true` | none | When `true`, scans the repo for supported MSBuild project files, `Directory.Build.props`, `Directory.Build.targets`, `VersionInfo.*`, and `AssemblyInfo.*` |
 
-#### .NET / C\#
+#### .NET / MSBuild
 
 ```json
 {
@@ -315,6 +353,43 @@ If no config file exists, dockship uses `"auto"` by default.
   }
 }
 ```
+
+#### Env provider options
+
+The `env` provider reads a pre-computed version from an environment variable or inline config. It is the simplest way to supply a version when CI tooling (e.g. GitHub Actions, TeamCity, GitLab CI) has already computed one.
+
+| Setting | Type | Default | Description |
+| --- | --- | --- | --- |
+| `version.env.versionVar` | string | `DOCKSHIP_VERSION` | Name of the environment variable that holds the version string |
+| `version.env.version` | string | empty | Inline version override — takes priority over the env var |
+
+#### Env provider
+
+```json
+{
+  "version": {
+    "provider": "env",
+    "env": {
+      "versionVar": "DOCKSHIP_VERSION"
+    }
+  }
+}
+```
+
+Or supply a static version at build time:
+
+```json
+{
+  "version": {
+    "provider": "env",
+    "env": {
+      "version": "1.0.0"
+    }
+  }
+}
+```
+
+In `auto` mode the `env` provider activates when `DOCKSHIP_VERSION` is set (or `version.env.version` is non-empty). It is evaluated last during detection, and also serves as a recovery fallback when an earlier detected provider fails to resolve a valid version.
 
 #### NBGV provider options
 
@@ -372,19 +447,20 @@ Appends Git commit count to semantic versions for unique build identifiers:
 
 ### Built-in Providers
 
-- **nodejs** – reads from `package.json`
-- **dotnet** – auto-discovers `.csproj`, `VersionInfo.cs`, `AssemblyInfo.cs`
-- **nbgv** – NBGV (Nerdbank.GitVersioning)
+| Name | Source | Auto-detected when |
+| --- | --- | --- |
+| **nodejs** | `package.json` | `package.json` exists at repo root |
+| **dotnet** | `.csproj` / `.vbproj` / `.fsproj` / `Directory.Build.props` / `AssemblyInfo.*` / `VersionInfo.*` | Any of those files are found |
+| **nbgv** | Nerdbank.GitVersioning | `version.json` exists at repo root |
+| **env** | `DOCKSHIP_VERSION` env var or inline config | `DOCKSHIP_VERSION` is set (last in chain), or a previously selected auto provider fails and env version input is available |
 
 ### External Providers
 
-Extend with custom version providers by installing separate packages:
+A third-party provider can be published as an npm package named `@agile-north/docker-ci-provider-<name>`. Install it and set `version.provider` to `<name>` — no `providerPackage` config needed:
 
 ```bash
 npm install -D @agile-north/dockship-provider-python
 ```
-
-Reference in `dockship.json`:
 
 ```json
 {
@@ -397,38 +473,38 @@ Reference in `dockship.json`:
 }
 ```
 
-### Custom Package Provider
+### Writing Your Own Provider
 
-Use a private/custom provider:
+A provider is a CommonJS module that exports a single `resolveVersion(context)` function. You can ship it as an npm package or drop a file directly in your repo.
 
-```json
-{
-  "version": {
-    "provider": "myversion",
-    "myversion": {
-      "providerPackage": "@acme/version-provider",
-      "customOption": "value"
-    }
-  }
-}
-```
+#### Provider contract
 
-Provider must export:
+```js
+// my-version-provider.cjs
+"use strict";
 
-```javascript
-// @acme/version-provider/index.cjs
 module.exports = {
   resolveVersion(context) {
-    // context.repoRoot, context.providerConfig, etc.
+    // context fields:
+    //   cwd           {string}  – working directory where dock was invoked
+    //   repoRoot      {string}  – absolute path to the repo root (.git parent)
+    //   buildConfig   {object}  – full merged dockship.json config
+    //   providerName  {string}  – resolved name of this provider ("myprovider")
+    //   providerConfig {object} – buildConfig.version.<providerName>
+    //   env           {object}  – process.env (or injected env in tests)
+
+    const version = context.env.MY_VERSION || "1.0.0";
+    const [major, minor, patch = "0"] = version.split(".");
+
     return {
-      source: "myversion",
-      version: "1.0.0",
-      full: "1.0.0",
-      major: "1",
-      minor: "0",
-      build: "0",
-      suffix: "",
-      semVer2: "1.0.0",
+      source: "myprovider",         // required – identifies the provider
+      version,                      // required – full version string (semver)
+      full: `${major}.${minor}.${patch}`, // required – numeric part only
+      major,                        // required
+      minor,                        // required
+      build: patch,
+      suffix: "",                   // prerelease label incl. leading "-"
+      semVer2: version,
       assemblyVersion: "",
       informationalVersion: "",
       nuGetPackageVersion: ""
@@ -436,6 +512,76 @@ module.exports = {
   }
 };
 ```
+
+All five required fields (`source`, `version`, `full`, `major`, `minor`) must be non-empty strings or dockship will throw. Use `normalizeVersionInfo` from `@agile-north/dockship/lib/version/model.cjs` to fill in defaults automatically:
+
+```js
+"use strict";
+const { normalizeVersionInfo } = require("@agile-north/dockship/lib/version/model.cjs");
+
+module.exports = {
+  resolveVersion(context) {
+    const version = context.providerConfig.version || context.env.MY_VERSION;
+    if (!version) throw new Error("MY_VERSION is not set");
+
+    return normalizeVersionInfo({ source: "myprovider", version });
+  }
+};
+```
+
+`normalizeVersionInfo` parses `major`, `minor`, `build`, `suffix`, and `semVer2` from `version` so you only need to supply what differs.
+
+#### Provider config is passed through
+
+Any keys you add under `version.<providerName>` in `dockship.json` are forwarded as `context.providerConfig` with no validation — use them for options specific to your provider:
+
+```json
+{
+  "version": {
+    "provider": "myprovider",
+    "myprovider": {
+      "providerPackage": "./.dockship/my-version-provider.cjs",
+      "versionFile": "version.txt"
+    }
+  }
+}
+```
+
+#### Provider resolution order
+
+When `loadProvider` runs for a given name it tries in order:
+
+1. **Bundled** – `lib/version/providers/<name>/index.cjs` inside dockship (built-ins only)
+2. **Scoped npm** – `@agile-north/docker-ci-provider-<name>` (installed in the consumer repo)
+3. **`providerPackage`** – value of `version.<name>.providerPackage`:
+   - Relative path (`./…` or `../…`) → resolved from the **client repo root**
+   - npm package name → resolved from `node_modules` as normal
+
+#### Local file in the client repo
+
+Drop the provider file anywhere in your repo — `.dockship/` is a natural home — and reference it with a relative path:
+
+```
+your-repo/
+├── .dockship/
+│   ├── dockship.json
+│   └── my-version-provider.cjs   ← provider lives here
+```
+
+```json
+{
+  "version": {
+    "provider": "myprovider",
+    "myprovider": {
+      "providerPackage": "./.dockship/my-version-provider.cjs"
+    }
+  }
+}
+```
+
+#### Publishing a provider package
+
+Name the package `@agile-north/docker-ci-provider-<name>` so consumers can reference it by short name without `providerPackage`. The package entry point must export `resolveVersion(context)` as shown above.
 
 ## Private npm Setup
 
@@ -643,18 +789,22 @@ Version from Node.js:
 - `ASSEMBLY_INFO_FILE_PATHS` – comma/semicolon separated AssemblyInfo file paths
 - `VERSION_INFO_FILE_PATHS` – comma/semicolon separated VersionInfo file paths
 - `CSPROJ_FILE_PATHS` – comma/semicolon separated `.csproj` file paths
+- `DOCKSHIP_VERSION` – explicit version string consumed by the `env` provider (also triggers `env` auto-detection when set)
 
 ## Troubleshooting
 
 ### "Provider not found"
 
-- Check `version.provider` in `dockship.json` matches an installed provider name
-- For external: ensure installed with `npm ls @agile-north/dockship-provider-<name>`
+- Check `version.provider` in `dockship.json` matches the installed provider name
+- For `@agile-north` scoped packages: ensure it is installed (`npm ls @agile-north/docker-ci-provider-<name>`)
+- For `providerPackage` relative paths: verify the path is relative to your **repo root** (e.g. `./.dockship/my-provider.cjs`)
+- For `providerPackage` npm packages: verify the package is in `node_modules`
 
 ### "Could not auto-detect version provider"
 
 - Add `.dockship/dockship.json` with `version.provider`
 - Or add a supported version source file such as `version.json`, `package.json`, or a `.csproj`
+- Or set the `DOCKSHIP_VERSION` env var to supply a version directly (activates the `env` provider as a last resort)
 
 ### "No version found"
 
@@ -664,7 +814,7 @@ Version from Node.js:
 ### Docker login fails in CI
 
 - Ensure `DOCKER_TARGET_REGISTRY` is set in env
-- For private registries, use `docker login` step before build
+- For private registries, either run `docker login` before build or provide `DOCKER_LOGIN_USERNAME` and `DOCKER_LOGIN_PASSWORD`
 
 ### Git height not incrementing
 

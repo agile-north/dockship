@@ -6,6 +6,9 @@
       "registry": "",
       "repository": ""
     },
+    "login": {
+      "registry": ""
+    },
     "push": {
       "enabled": false,
       "branches": []

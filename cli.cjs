@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const cp = require("child_process");
 
@@ -38,6 +39,13 @@ const ENV_DOCKER_CONTEXT = "DOCKER_CONTEXT";
 const ENV_DOCKERFILE_PATH = "DOCKERFILE_PATH";
 const ENV_DOCKER_PLATFORM = "DOCKER_PLATFORM";
 const ENV_DOCKER_BUILD_ARGS = "DOCKER_BUILD_ARGS";
+const ENV_DOCKER_LOGIN_USERNAME = "DOCKER_LOGIN_USERNAME";
+const ENV_DOCKER_LOGIN_PASSWORD = "DOCKER_LOGIN_PASSWORD";
+const ENV_DOCKER_LOGIN_REGISTRY = "DOCKER_LOGIN_REGISTRY";
+const LEGACY_ENV_DOCKER_AUTH_USERNAME = "DOCKER_AUTH_USERNAME";
+const LEGACY_ENV_DOCKER_AUTH_PASSWORD = "DOCKER_AUTH_PASSWORD";
+const LEGACY_ENV_DOCKER_AUTH_REGISTRY = "DOCKER_AUTH_REGISTRY";
+const ENV_DOCKER_CONFIG = "DOCKER_CONFIG";
 const ENV_GITHUB_HEAD_REF = "GITHUB_HEAD_REF";
 const ENV_GITHUB_REF_NAME = "GITHUB_REF_NAME";
 const ENV_BUILD_SOURCEBRANCHNAME = "BUILD_SOURCEBRANCHNAME";
@@ -51,6 +59,7 @@ const ENV_GIT_BRANCH = "GIT_BRANCH";
 const DEFAULT_DOCKERFILE = "Dockerfile";
 const DEFAULT_CONTEXT = ".";
 const DEFAULT_PROGRESS = "plain";
+const TEMP_DOCKER_CONFIG_PREFIX = "dockship-docker-config-";
 const EMPTY_STRING = "";
 const GIT_HEAD = "HEAD";
 const GIT_REFS_HEADS_PREFIX = "refs/heads/";
@@ -59,12 +68,15 @@ const GIT_REMOTES_ORIGIN_PREFIX = "origin/";
 // Docker args
 const DOCKER_CMD = "docker";
 const DOCKER_BUILD = "build";
+const DOCKER_LOGIN = "login";
 const DOCKER_PUSH = "push";
 const DOCKER_FLAG_TAG = "-t";
 const DOCKER_FLAG_FILE = "-f";
 const DOCKER_FLAG_PLATFORM = "--platform";
 const DOCKER_FLAG_BUILD_ARG = "--build-arg";
 const DOCKER_FLAG_PROGRESS = "--progress";
+const DOCKER_FLAG_USERNAME = "--username";
+const DOCKER_FLAG_PASSWORD_STDIN = "--password-stdin";
 
 // Git args
 const GIT_CMD = "git";
@@ -79,6 +91,9 @@ function getDefaultBuildConfig() {
       target: {
         registry: EMPTY_STRING,
         repository: EMPTY_STRING
+      },
+      login: {
+        registry: EMPTY_STRING
       },
       push: {
         enabled: false,
@@ -179,6 +194,18 @@ function getString(v, def = "") {
   return v === undefined || v === null ? def : String(v).trim();
 }
 
+function getFirstDefinedString(env, keys, def = EMPTY_STRING) {
+  for (const key of keys) {
+    const value = getString(env[key]);
+
+    if (value) {
+      return value;
+    }
+  }
+
+  return def;
+}
+
 function getStringArray(v, def = []) {
   const source = v === undefined || v === null || v === "" ? def : v;
 
@@ -259,11 +286,12 @@ function resolveBuildArgs(env, docker) {
 }
 
 function exec(command, args, options = {}) {
-  console.log([command, ...args].join(" "));
+  console.log([command, ...(options.logArgs || args)].join(" "));
   const res = cp.spawnSync(command, args, {
-    stdio: "inherit",
+    stdio: options.input === undefined ? "inherit" : ["pipe", "inherit", "inherit"],
     cwd: options.cwd || process.cwd(),
     env: options.env || process.env,
+    input: options.input,
   });
 
   if (res.status !== 0) {
@@ -387,6 +415,7 @@ function getDockerSettings(config, env, repoRoot, options = {}) {
   const requireImageTarget = options.requireImageTarget === true;
   const docker = config.docker || {};
   const target = docker.target || {};
+  const login = docker.login || {};
   const push = docker.push || {};
   const tags = docker.tags || {};
 
@@ -402,6 +431,9 @@ function getDockerSettings(config, env, repoRoot, options = {}) {
   if (requireImageTarget && !repo) throw new Error(`${ENV_DOCKER_REPOSITORY} required`);
 
   return {
+    registry,
+    repository: repo,
+    loginRegistry: getString(login.registry),
     image: registry && repo ? `${registry}/${repo}` : EMPTY_STRING,
     context: getString(env[ENV_DOCKER_CONTEXT], docker.context || DEFAULT_CONTEXT),
     file: getString(env[ENV_DOCKERFILE_PATH], getNestedValue(docker.file, docker.dockerfile) || DEFAULT_DOCKERFILE),
@@ -427,7 +459,65 @@ function getTags(version, settings) {
   return [...tags];
 }
 
-function dockerBuild(repoRoot, version, settings) {
+function getDockerAuthSettings(env, settings) {
+  const username = getFirstDefinedString(env, [ENV_DOCKER_LOGIN_USERNAME, LEGACY_ENV_DOCKER_AUTH_USERNAME]);
+  const password = getFirstDefinedString(env, [ENV_DOCKER_LOGIN_PASSWORD, LEGACY_ENV_DOCKER_AUTH_PASSWORD]);
+  const registry = getFirstDefinedString(
+    env,
+    [ENV_DOCKER_LOGIN_REGISTRY, LEGACY_ENV_DOCKER_AUTH_REGISTRY],
+    settings.loginRegistry || settings.registry
+  );
+
+  if ((username && !password) || (!username && password)) {
+    throw new Error(`${ENV_DOCKER_LOGIN_USERNAME} and ${ENV_DOCKER_LOGIN_PASSWORD} must both be set`);
+  }
+
+  if ((username || password) && !registry) {
+    throw new Error(`${ENV_DOCKER_LOGIN_REGISTRY} or ${ENV_DOCKER_REGISTRY} required when docker login credentials are provided`);
+  }
+
+  return {
+    enabled: Boolean(username && password),
+    username,
+    password,
+    registry
+  };
+}
+
+function dockerLogin(repoRoot, auth, env) {
+  exec(
+    DOCKER_CMD,
+    [DOCKER_LOGIN, auth.registry, DOCKER_FLAG_USERNAME, auth.username, DOCKER_FLAG_PASSWORD_STDIN],
+    {
+      cwd: repoRoot,
+      env,
+      input: `${auth.password}\n`
+    }
+  );
+}
+
+function withDockerAuth(repoRoot, env, settings, action) {
+  const auth = getDockerAuthSettings(env, settings);
+
+  if (!auth.enabled) {
+    return action(env);
+  }
+
+  const dockerConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), TEMP_DOCKER_CONFIG_PREFIX));
+  const authEnv = {
+    ...env,
+    [ENV_DOCKER_CONFIG]: dockerConfigDir
+  };
+
+  try {
+    dockerLogin(repoRoot, auth, authEnv);
+    return action(authEnv);
+  } finally {
+    fs.rmSync(dockerConfigDir, { recursive: true, force: true });
+  }
+}
+
+function dockerBuild(repoRoot, version, settings, env) {
   const tags = getTags(version, settings);
 
   const args = [
@@ -452,10 +542,10 @@ function dockerBuild(repoRoot, version, settings) {
 
   args.push(settings.context);
 
-  exec(DOCKER_CMD, args, { cwd: repoRoot });
+  exec(DOCKER_CMD, args, { cwd: repoRoot, env });
 }
 
-function dockerPush(repoRoot, version, settings) {
+function dockerPush(repoRoot, version, settings, env) {
   if (!settings.pushEnabled) {
     console.log("Push disabled");
     return;
@@ -476,7 +566,7 @@ function dockerPush(repoRoot, version, settings) {
   const tags = getTags(version, settings);
 
   tags.forEach(t => {
-    exec(DOCKER_CMD, [DOCKER_PUSH, `${settings.image}:${t}`], { cwd: repoRoot });
+    exec(DOCKER_CMD, [DOCKER_PUSH, `${settings.image}:${t}`], { cwd: repoRoot, env });
   });
 }
 
@@ -495,8 +585,8 @@ USAGE:
 
 COMMANDS:
   build          Build Docker image(s) with version tags (default)
-  ship, push     Push Docker image(s) to registry
-  all            Build and push Docker image(s)
+  ship, push     Push existing image tags to registry
+  all            Build image(s), then push them to registry
   version        Output resolved version information as JSON
   tags           Output computed Docker tags as JSON
   help, --help   Show this help menu
@@ -526,10 +616,22 @@ ENVIRONMENT VARIABLES:
   DOCKERFILE_PATH             Path to Dockerfile (default: Dockerfile)
   DOCKER_PLATFORM             Target platform (e.g., linux/amd64)
   DOCKER_BUILD_ARGS           Build args as KEY=value pairs
+  DOCKER_LOGIN_USERNAME       Optional registry login username
+  DOCKER_LOGIN_PASSWORD       Optional registry login password/token
+  DOCKER_LOGIN_REGISTRY       Optional login registry override
 
 VERSION DETECTION:
   Providers (run in order): Node.js (package.json) → .NET (.csproj) → Nerdbank.GitVersioning
   Custom providers can be configured in .dockship/dockship.json
+
+DOCKER LOGIN:
+  When DOCKER_LOGIN_USERNAME and DOCKER_LOGIN_PASSWORD are set, dock uses
+  a temporary isolated Docker config for login during that invocation only.
+  DOCKER_LOGIN_REGISTRY defaults to docker.login.registry, then DOCKER_TARGET_REGISTRY.
+
+LEGACY COMPATIBILITY:
+  DOCKER_AUTH_USERNAME, DOCKER_AUTH_PASSWORD, and DOCKER_AUTH_REGISTRY
+  remain supported as aliases for the DOCKER_LOGIN_* variables.
 
 For more information, visit: https://github.com/agile-north/dockship
 `;
@@ -558,21 +660,27 @@ function main() {
   switch (cmd) {
     case CMD_BUILD: {
       const docker = getDockerSettings(config, process.env, root, { requireImageTarget: true });
-      dockerBuild(root, version, docker);
+      withDockerAuth(root, process.env, docker, authEnv => {
+        dockerBuild(root, version, docker, authEnv);
+      });
       break;
     }
 
     case CMD_PUSH:
     case CMD_SHIP: {
       const docker = getDockerSettings(config, process.env, root, { requireImageTarget: true });
-      dockerPush(root, version, docker);
+      withDockerAuth(root, process.env, docker, authEnv => {
+        dockerPush(root, version, docker, authEnv);
+      });
       break;
     }
 
     case CMD_ALL: {
       const docker = getDockerSettings(config, process.env, root, { requireImageTarget: true });
-      dockerBuild(root, version, docker);
-      dockerPush(root, version, docker);
+      withDockerAuth(root, process.env, docker, authEnv => {
+        dockerBuild(root, version, docker, authEnv);
+        dockerPush(root, version, docker, authEnv);
+      });
       break;
     }
 
