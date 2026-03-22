@@ -94,21 +94,28 @@ Authentication options:
 
 ## Quick Start
 
-**1. Create `.dockship/dockship.json`**
+**1. Optional: create `.dockship/dockship.json`**
 
 ```json
 {
   "docker": {
-    "dockerfile": "Dockerfile",
+    "file": "Dockerfile",
     "context": ".",
-    "targetRegistry": "registry.example.com",
-    "targetRepository": "my-org/my-app",
-    "pushEnabled": false,
-    "tagLatest": false
+    "target": {
+      "registry": "registry.example.com",
+      "repository": "my-org/my-app"
+    },
+    "push": {
+      "enabled": false,
+      "branches": ["main", "develop"]
+    },
+    "tags": {
+      "latest": false
+    }
   },
 
   "version": {
-    "provider": "nodejs",
+    "provider": "auto",
     "nodejs": {
       "packageJsonPath": "package.json",
       "mode": "git-height"
@@ -151,36 +158,125 @@ npx dock tags
 
 ### Docker Settings
 
+The config file is optional. If `.dockship/dockship.json` is missing, dockship uses built-in defaults:
+
+- `docker.file = "Dockerfile"`
+- `docker.context = "."`
+- `docker.push.enabled = false`
+- `docker.push.branches = []`
+- `docker.tags.latest = false`
+
+For `dock build`, `dock ship`, and `dock all`, image target settings still need to come from config or env:
+
+- `DOCKER_TARGET_REGISTRY`
+- `DOCKER_TARGET_REPOSITORY`
+
+Configuration precedence is:
+
+1. CI/runtime environment variables
+2. `.env` values at the repo root
+3. `.dockship/dockship.json`
+4. built-in defaults
+
 ```json
 {
   "docker": {
-    "dockerfile": "Dockerfile",           // Path to Dockerfile
+    "file": "Dockerfile",                  // Path to Dockerfile
     "context": ".",                        // Build context
-    "targetRegistry": "registry.io",       // Docker registry
-    "targetRepository": "org/app",         // Image repository
-    "pushEnabled": false,                  // Enable/disable push
-    "tagLatest": false,                    // Add 'latest' tag
-    "platform": "linux/amd64",             // Optional: build platform
-    "buildArgs": "--build-arg ENV=prod"    // Optional: extra docker args
+    "target": {
+      "registry": "registry.io",           // Docker registry
+      "repository": "org/app"              // Image repository
+    },
+    "push": {
+      "enabled": false,                     // Enable/disable push
+      "branches": ["main", "develop"]    // Optional: allowed branches, supports *
+    },
+    "tags": {
+      "latest": false                       // Add 'latest' tag
+    },
+    "platform": "linux/amd64",            // Optional: build platform
+    "buildArgs": { "ENV": "prod" }        // Optional: extra docker build args
   }
 }
 ```
+
+#### Docker option reference
+
+| Setting | Type | Default | Env override | Notes |
+| --- | --- | --- | --- | --- |
+| `docker.file` | string | `Dockerfile` | `DOCKERFILE_PATH` | Path to the Dockerfile relative to the repo root |
+| `docker.context` | string | `.` | `DOCKER_CONTEXT` | Docker build context |
+| `docker.target.registry` | string | empty | `DOCKER_TARGET_REGISTRY` | Required for `dock build`, `dock ship`, and `dock all` |
+| `docker.target.repository` | string | empty | `DOCKER_TARGET_REPOSITORY` | Required for `dock build`, `dock ship`, and `dock all` |
+| `docker.push.enabled` | boolean | `false` | `DOCKER_PUSH_ENABLED` | Enables pushing for `dock ship` and `dock all` |
+| `docker.push.branches` | string[] | `[]` | `DOCKER_PUSH_BRANCHES` | Branch allow-list; supports `*` wildcards |
+| `docker.tags.latest` | boolean | `false` | `DOCKER_TAG_LATEST` | Adds the `latest` tag in addition to semantic tags |
+| `docker.platform` | string | empty | `DOCKER_PLATFORM` | Passed to `docker build --platform` |
+| `docker.buildArgs` | object | `{}` | `DOCKER_BUILD_ARGS` | Key/value pairs passed as `--build-arg KEY=value`; appended before the auto-generated `APP_VERSION` build arg. Env var accepts JSON (`{"K":"v"}`) or semicolon-delimited `KEY=value;KEY2=value2` |
+
+`dock ship` and `dock all` only push when both of these are true:
+
+- `docker.push.enabled` is `true`
+- the current branch matches `docker.push.branches` when a branch list is configured
+
+If `docker.push.branches` is omitted or empty, any branch may push.
+
+Branch matching details:
+
+- patterns are matched against the full normalized branch name
+- `*` matches any sequence of characters
+- examples: `main`, `develop`, `release/*`, `feature/*`
+- branch name detection uses common CI branch variables first, then falls back to `git rev-parse --abbrev-ref HEAD`
+
+Legacy flat keys are still accepted for compatibility:
+
+- `docker.dockerfile` → `docker.file`
+- `docker.targetRegistry` → `docker.target.registry`
+- `docker.targetRepository` → `docker.target.repository`
+- `docker.pushEnabled` → `docker.push.enabled`
+- `docker.pushBranches` → `docker.push.branches`
+- `docker.tagLatest` → `docker.tags.latest`
 
 Environment variable overrides (CI):
 
 - `DOCKER_TARGET_REGISTRY`
 - `DOCKER_TARGET_REPOSITORY`
 - `DOCKER_PUSH_ENABLED`
+- `DOCKER_PUSH_BRANCHES`
 - `DOCKER_TAG_LATEST`
 
 ### Version Providers
+
+`version.provider` supports `"auto"`, `"nodejs"`, `"dotnet"`, and `"nbgv"`.
+
+When `version.provider` is `"auto"`, dockship uses this order:
+
+1. `version.json` → `nbgv`
+2. `package.json` → `nodejs`
+3. `.csproj`, `AssemblyInfo.cs`, or `VersionInfo.cs` → `dotnet`
+
+If no config file exists, dockship uses `"auto"` by default.
+
+#### Version option reference
+
+| Setting | Type | Default | Description |
+| --- | --- | --- | --- |
+| `version.provider` | string | `auto` | Version provider name. Use `auto`, `nodejs`, `dotnet`, `nbgv`, or a custom provider name |
+| `version.<provider>.providerPackage` | string | empty | For custom providers, npm package name to load |
+
+#### Node.js provider options
+
+| Setting | Type | Default | Env override | Description |
+| --- | --- | --- | --- | --- |
+| `version.nodejs.packageJsonPath` | string | `package.json` | `PACKAGE_JSON_PATH` | Path to the package file used for version resolution |
+| `version.nodejs.mode` | string | `fixed` | `NODEJS_VERSION_MODE` | `fixed` uses `package.json` version as-is; `git-height` appends commit count |
 
 #### Node.js (npm)
 
 ```json
 {
   "version": {
-    "provider": "nodejs",
+    "provider": "auto",
     "nodejs": {
       "packageJsonPath": "package.json",
       "mode": "fixed"  // or "git-height"
@@ -188,6 +284,17 @@ Environment variable overrides (CI):
   }
 }
 ```
+
+#### .NET provider options
+
+| Setting | Type | Default | Env override | Description |
+| --- | --- | --- | --- | --- |
+| `version.dotnet.mode` | string | `fixed` | `DOTNET_VERSION_MODE` | `fixed` uses discovered version as-is; `git-height` appends commit count |
+| `version.dotnet.mainAssemblyInfoFilePath` | string | empty | `MAIN_ASSEMBLY_INFO_FILE_PATH` | Preferred explicit AssemblyInfo file |
+| `version.dotnet.assemblyInfoFilePaths` | string[] | `[]` | `ASSEMBLY_INFO_FILE_PATHS` | Additional AssemblyInfo file paths |
+| `version.dotnet.versionInfoFilePaths` | string[] | `[]` | `VERSION_INFO_FILE_PATHS` | Explicit VersionInfo file paths |
+| `version.dotnet.csprojFilePaths` | string[] | `[]` | `CSPROJ_FILE_PATHS` | Explicit `.csproj` file paths |
+| `version.dotnet.autoDiscover` | boolean | `true` | none | When `true`, scans the repo for `.csproj`, `VersionInfo.cs`, and `AssemblyInfo.cs` if explicit paths are not provided |
 
 #### .NET / C\#
 
@@ -203,6 +310,18 @@ Environment variable overrides (CI):
 }
 ```
 
+#### NBGV provider options
+
+| Setting | Type | Default | Description |
+| --- | --- | --- | --- |
+| `version.nbgv.useDocker` | boolean | `true` | Run nbgv inside a Docker container — no .NET SDK required on the host |
+| `version.nbgv.dockerImage` | string | `mcr.microsoft.com/dotnet/sdk:latest` | Docker image used when `useDocker` is `true` |
+| `version.nbgv.versionJsonFileName` | string | `version.json` | File used to detect and run NBGV |
+| `version.nbgv.dotnetToolManifestRelativePath` | string | `.config/dotnet-tools.json` | Tool manifest used when restoring local dotnet tools |
+| `version.nbgv.allowToolRestore` | boolean | `true` | Allows `dotnet tool restore` before retrying (host execution only) |
+| `version.nbgv.allowGlobalCommand` | boolean | `true` | Allows the global `nbgv` command as a fallback (host execution only) |
+| `version.nbgv.requireVersionJson` | boolean | `true` | When `true`, `version.json` must exist for the repo to be considered an NBGV repo |
+
 #### NBGV
 
 ```json
@@ -210,6 +329,8 @@ Environment variable overrides (CI):
   "version": {
     "provider": "nbgv",
     "nbgv": {
+      "useDocker": true,
+      "dockerImage": "mcr.microsoft.com/dotnet/sdk:latest",
       "versionJsonFileName": "version.json",
       "allowToolRestore": true,
       "allowGlobalCommand": true
@@ -235,6 +356,7 @@ Appends Git commit count to semantic versions for unique build identifiers:
 | ------- | ----------- |
 | `dock build` | Build Docker image with computed version |
 | `dock ship` | Push built image to registry |
+| `dock push` | Alias for `dock ship` |
 | `dock all` | Build and ship |
 | `dock version` | Show resolved version (JSON) |
 | `dock tags` | Show generated image tags |
@@ -354,6 +476,7 @@ steps {
               -e DOCKER_TARGET_REGISTRY \
               -e DOCKER_TARGET_REPOSITORY \
               -e DOCKER_PUSH_ENABLED \
+              -e DOCKER_PUSH_BRANCHES \
               node:18-alpine \
               npx dock all
         """.trimIndent()
@@ -370,19 +493,45 @@ steps {
     DOCKER_TARGET_REGISTRY: ${{ secrets.REGISTRY }}
     DOCKER_TARGET_REPOSITORY: my-org/my-app
     DOCKER_PUSH_ENABLED: true
+    DOCKER_PUSH_BRANCHES: main,develop
     NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 ```
 
 ## Examples
+
+### Zero-Config Node.js Repo
+
+If your repo has a `package.json`, you can often start with env only and no `.dockship/dockship.json`:
+
+```bash
+DOCKER_TARGET_REGISTRY=registry.example.com \
+DOCKER_TARGET_REPOSITORY=my-org/my-app \
+npx dock build
+```
+
+### Branch-Restricted Pushes
+
+```json
+{
+  "docker": {
+    "push": {
+      "enabled": true,
+      "branches": ["main", "develop", "release/*"]
+    }
+  }
+}
+```
 
 ### Monorepo Services
 
 ```json
 {
   "docker": {
-    "dockerfile": "services/api/Dockerfile",
+    "file": "services/api/Dockerfile",
     "context": "services/api",
-    "targetRepository": "my-org/api"
+    "target": {
+      "repository": "my-org/api"
+    }
   },
   "version": {
     "provider": "nodejs",
@@ -419,7 +568,9 @@ Version from Node.js:
 ```json
 {
   "docker": {
-    "targetRepository": "my-org/portal"
+    "target": {
+      "repository": "my-org/portal"
+    }
   },
   "version": {
     "provider": "nodejs",
@@ -445,20 +596,47 @@ Version from Node.js:
 }
 ```
 
+### NBGV Repo
+
+```json
+{
+  "version": {
+    "provider": "nbgv",
+    "nbgv": {
+      "useDocker": true,
+      "dockerImage": "mcr.microsoft.com/dotnet/sdk:latest",
+      "versionJsonFileName": "version.json",
+      "allowToolRestore": true,
+      "allowGlobalCommand": true
+    }
+  }
+}
+```
+
 ## Environment Variables
 
 ### Runtime
 
-- `DOCKER_TARGET_REGISTRY` – override registry in dockship.json
-- `DOCKER_TARGET_REPOSITORY` – override repository
-- `DOCKER_PUSH_ENABLED` – "true"/"false", override push setting
-- `DOCKER_TAG_LATEST` – "true"/"false", add latest tag
+- `DOCKER_TARGET_REGISTRY` – override `docker.target.registry`
+- `DOCKER_TARGET_REPOSITORY` – override `docker.target.repository`
+- `DOCKERFILE_PATH` – override `docker.file`
+- `DOCKER_CONTEXT` – override `docker.context`
+- `DOCKER_PUSH_ENABLED` – "true"/"false", override `docker.push.enabled`
+- `DOCKER_PUSH_BRANCHES` – comma/semicolon/newline separated branch patterns, supports `*`
+- `DOCKER_TAG_LATEST` – "true"/"false", override `docker.tags.latest`
+- `DOCKER_PLATFORM` – override `docker.platform`
+- `DOCKER_BUILD_ARGS` – build args as JSON (`{"ENV":"prod"}`) or semicolon-delimited `KEY=value;KEY2=value2`; overrides `docker.buildArgs`
 - `NPM_TOKEN` – for private npm (if using @agile-north providers)
 
 ### Provider-Specific
 
 - `NODEJS_VERSION_MODE` – override version mode (fixed/git-height)
 - `PACKAGE_JSON_PATH` – override package.json location
+- `DOTNET_VERSION_MODE` – override .NET version mode (fixed/git-height)
+- `MAIN_ASSEMBLY_INFO_FILE_PATH` – explicit main AssemblyInfo file path
+- `ASSEMBLY_INFO_FILE_PATHS` – comma/semicolon separated AssemblyInfo file paths
+- `VERSION_INFO_FILE_PATHS` – comma/semicolon separated VersionInfo file paths
+- `CSPROJ_FILE_PATHS` – comma/semicolon separated `.csproj` file paths
 
 ## Troubleshooting
 
@@ -466,6 +644,11 @@ Version from Node.js:
 
 - Check `version.provider` in `dockship.json` matches an installed provider name
 - For external: ensure installed with `npm ls @agile-north/dockship-provider-<name>`
+
+### "Could not auto-detect version provider"
+
+- Add `.dockship/dockship.json` with `version.provider`
+- Or add a supported version source file such as `version.json`, `package.json`, or a `.csproj`
 
 ### "No version found"
 
@@ -480,7 +663,7 @@ Version from Node.js:
 ### Git height not incrementing
 
 - Requires `.git` directory (not in Docker container by default)
-- Mount repo root: `-v "$PWD:/workspace -v "$PWD/.git:/workspace/.git`
+- Mount repo root and git metadata, for example: `-v "$PWD:/workspace" -v "$PWD/.git:/workspace/.git"`
 
 ## License
 

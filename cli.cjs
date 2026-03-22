@@ -30,16 +30,29 @@ const ENV_FILE_NAME = ".env";
 const ENV_DOCKER_REGISTRY = "DOCKER_TARGET_REGISTRY";
 const ENV_DOCKER_REPOSITORY = "DOCKER_TARGET_REPOSITORY";
 const ENV_DOCKER_PUSH_ENABLED = "DOCKER_PUSH_ENABLED";
+const ENV_DOCKER_PUSH_BRANCHES = "DOCKER_PUSH_BRANCHES";
 const ENV_DOCKER_TAG_LATEST = "DOCKER_TAG_LATEST";
 const ENV_DOCKER_CONTEXT = "DOCKER_CONTEXT";
 const ENV_DOCKERFILE_PATH = "DOCKERFILE_PATH";
 const ENV_DOCKER_PLATFORM = "DOCKER_PLATFORM";
 const ENV_DOCKER_BUILD_ARGS = "DOCKER_BUILD_ARGS";
+const ENV_GITHUB_HEAD_REF = "GITHUB_HEAD_REF";
+const ENV_GITHUB_REF_NAME = "GITHUB_REF_NAME";
+const ENV_BUILD_SOURCEBRANCHNAME = "BUILD_SOURCEBRANCHNAME";
+const ENV_BUILD_SOURCEBRANCH = "BUILD_SOURCEBRANCH";
+const ENV_BRANCH_NAME = "BRANCH_NAME";
+const ENV_CI_COMMIT_REF_NAME = "CI_COMMIT_REF_NAME";
+const ENV_TEAMCITY_BUILD_BRANCH = "TEAMCITY_BUILD_BRANCH";
+const ENV_GIT_BRANCH = "GIT_BRANCH";
 
 // Defaults
 const DEFAULT_DOCKERFILE = "Dockerfile";
 const DEFAULT_CONTEXT = ".";
 const DEFAULT_PROGRESS = "plain";
+const EMPTY_STRING = "";
+const GIT_HEAD = "HEAD";
+const GIT_REFS_HEADS_PREFIX = "refs/heads/";
+const GIT_REMOTES_ORIGIN_PREFIX = "origin/";
 
 // Docker args
 const DOCKER_CMD = "docker";
@@ -50,6 +63,33 @@ const DOCKER_FLAG_FILE = "-f";
 const DOCKER_FLAG_PLATFORM = "--platform";
 const DOCKER_FLAG_BUILD_ARG = "--build-arg";
 const DOCKER_FLAG_PROGRESS = "--progress";
+
+// Git args
+const GIT_CMD = "git";
+const GIT_REV_PARSE = "rev-parse";
+const GIT_ABBREV_REF = "--abbrev-ref";
+
+function getDefaultBuildConfig() {
+  return {
+    docker: {
+      file: DEFAULT_DOCKERFILE,
+      context: DEFAULT_CONTEXT,
+      target: {
+        registry: EMPTY_STRING,
+        repository: EMPTY_STRING
+      },
+      push: {
+        enabled: false,
+        branches: []
+      },
+      tags: {
+        latest: false
+      },
+      platform: EMPTY_STRING,
+      buildArgs: {}
+    }
+  };
+}
 
 
 function loadDotEnv(repoRoot) {
@@ -137,6 +177,85 @@ function getString(v, def = "") {
   return v === undefined || v === null ? def : String(v).trim();
 }
 
+function getStringArray(v, def = []) {
+  const source = v === undefined || v === null || v === "" ? def : v;
+
+  if (Array.isArray(source)) {
+    return source
+      .map(item => getString(item))
+      .filter(Boolean);
+  }
+
+  return getString(source)
+    .split(/[;,\r\n]+/)
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+function splitCommandArgs(value) {
+  const input = getString(value);
+
+  if (!input) {
+    return [];
+  }
+
+  const parts = [];
+  const regex = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|([^\s]+)/g;
+  let match;
+
+  while ((match = regex.exec(input)) !== null) {
+    parts.push(match[1] || match[2] || match[3] || EMPTY_STRING);
+  }
+
+  return parts.filter(Boolean);
+}
+
+function parseBuildArgsEnv(value) {
+  const trimmed = value.trim();
+
+  if (trimmed.startsWith("{")) {
+    let obj;
+
+    try {
+      obj = JSON.parse(trimmed);
+    } catch {
+      throw new Error(`${ENV_DOCKER_BUILD_ARGS} looks like JSON but could not be parsed`);
+    }
+
+    return Object.entries(obj).flatMap(([k, v]) => [DOCKER_FLAG_BUILD_ARG, `${k}=${v}`]);
+  }
+
+  // Semicolon/newline-delimited KEY=value pairs
+  return trimmed.split(/[;\n]+/).flatMap(pair => {
+    const p = pair.trim();
+
+    return p ? [DOCKER_FLAG_BUILD_ARG, p] : [];
+  });
+}
+
+function resolveBuildArgs(env, docker) {
+  // Priority 1: DOCKER_BUILD_ARGS env var (JSON object or KEY=value;KEY2=value2)
+  const envValue = getString(env[ENV_DOCKER_BUILD_ARGS]);
+
+  if (envValue) {
+    return parseBuildArgsEnv(envValue);
+  }
+
+  // Priority 2: docker.buildArgs in config (object or legacy raw string)
+  const configArgs = docker.buildArgs;
+
+  if (configArgs !== null && configArgs !== undefined && typeof configArgs === "object") {
+    return Object.entries(configArgs).flatMap(([k, v]) => [DOCKER_FLAG_BUILD_ARG, `${k}=${v}`]);
+  }
+
+  if (typeof configArgs === "string" && configArgs) {
+    // Legacy: raw CLI passthrough, e.g. "--build-arg ENV=prod --build-arg FOO=bar"
+    return splitCommandArgs(configArgs);
+  }
+
+  return [];
+}
+
 function exec(command, args, options = {}) {
   console.log([command, ...args].join(" "));
   const res = cp.spawnSync(command, args, {
@@ -193,23 +312,103 @@ function getVersion(repoRoot) {
 // =======================
 //
 
-function getDockerSettings(config, env) {
+function getNestedValue(primary, legacy) {
+  return primary === undefined ? legacy : primary;
+}
+
+function normalizeBranchName(branchName) {
+  const branch = getString(branchName, EMPTY_STRING);
+
+  if (!branch) {
+    return EMPTY_STRING;
+  }
+
+  if (branch.startsWith(GIT_REFS_HEADS_PREFIX)) {
+    return branch.slice(GIT_REFS_HEADS_PREFIX.length);
+  }
+
+  if (branch.startsWith(GIT_REMOTES_ORIGIN_PREFIX)) {
+    return branch.slice(GIT_REMOTES_ORIGIN_PREFIX.length);
+  }
+
+  return branch;
+}
+
+function tryGetCurrentBranch(repoRoot, env) {
+  const envBranch =
+    env[ENV_GITHUB_HEAD_REF] ||
+    env[ENV_GITHUB_REF_NAME] ||
+    env[ENV_BUILD_SOURCEBRANCHNAME] ||
+    env[ENV_BUILD_SOURCEBRANCH] ||
+    env[ENV_BRANCH_NAME] ||
+    env[ENV_CI_COMMIT_REF_NAME] ||
+    env[ENV_TEAMCITY_BUILD_BRANCH] ||
+    env[ENV_GIT_BRANCH];
+
+  const normalizedEnvBranch = normalizeBranchName(envBranch);
+
+  if (normalizedEnvBranch) {
+    return normalizedEnvBranch;
+  }
+
+  try {
+    const branch = execCapture(GIT_CMD, [GIT_REV_PARSE, GIT_ABBREV_REF, GIT_HEAD], { cwd: repoRoot });
+    const normalizedBranch = normalizeBranchName(branch);
+
+    return normalizedBranch === GIT_HEAD ? EMPTY_STRING : normalizedBranch;
+  } catch {
+    return EMPTY_STRING;
+  }
+}
+
+function escapeRegex(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function branchPatternToRegex(pattern) {
+  return new RegExp(`^${escapeRegex(pattern).replace(/\\\*/g, ".*")}$`);
+}
+
+function isBranchAllowed(branch, patterns) {
+  if (!patterns.length) {
+    return true;
+  }
+
+  if (!branch) {
+    return false;
+  }
+
+  return patterns.some(pattern => branchPatternToRegex(pattern).test(branch));
+}
+
+function getDockerSettings(config, env, repoRoot, options = {}) {
+  const requireImageTarget = options.requireImageTarget === true;
   const docker = config.docker || {};
+  const target = docker.target || {};
+  const push = docker.push || {};
+  const tags = docker.tags || {};
 
-  const registry = getString(env[ENV_DOCKER_REGISTRY], docker.targetRegistry);
-  const repo = getString(env[ENV_DOCKER_REPOSITORY], docker.targetRepository);
+  const registry = getString(env[ENV_DOCKER_REGISTRY], getNestedValue(target.registry, docker.targetRegistry));
+  const repo = getString(env[ENV_DOCKER_REPOSITORY], getNestedValue(target.repository, docker.targetRepository));
+  const currentBranch = tryGetCurrentBranch(repoRoot, env);
+  const pushBranches = getStringArray(
+    env[ENV_DOCKER_PUSH_BRANCHES],
+    getNestedValue(push.branches, docker.pushBranches)
+  );
 
-  if (!registry) throw new Error(`${ENV_DOCKER_REGISTRY} required`);
-  if (!repo) throw new Error(`${ENV_DOCKER_REPOSITORY} required`);
+  if (requireImageTarget && !registry) throw new Error(`${ENV_DOCKER_REGISTRY} required`);
+  if (requireImageTarget && !repo) throw new Error(`${ENV_DOCKER_REPOSITORY} required`);
 
   return {
-    image: `${registry}/${repo}`,
+    image: registry && repo ? `${registry}/${repo}` : EMPTY_STRING,
     context: getString(env[ENV_DOCKER_CONTEXT], docker.context || DEFAULT_CONTEXT),
-    dockerfile: getString(env[ENV_DOCKERFILE_PATH], docker.dockerfile || DEFAULT_DOCKERFILE),
-    push: normalizeBool(env[ENV_DOCKER_PUSH_ENABLED], docker.pushEnabled),
-    latest: normalizeBool(env[ENV_DOCKER_TAG_LATEST], docker.tagLatest),
+    file: getString(env[ENV_DOCKERFILE_PATH], getNestedValue(docker.file, docker.dockerfile) || DEFAULT_DOCKERFILE),
+    pushEnabled: normalizeBool(env[ENV_DOCKER_PUSH_ENABLED], getNestedValue(push.enabled, docker.pushEnabled)),
+    pushBranches,
+    currentBranch,
+    latest: normalizeBool(env[ENV_DOCKER_TAG_LATEST], getNestedValue(tags.latest, docker.tagLatest)),
     platform: getString(env[ENV_DOCKER_PLATFORM], docker.platform),
-    buildArgs: getString(env[ENV_DOCKER_BUILD_ARGS]),
+    buildArgFlags: resolveBuildArgs(env, docker),
   };
 }
 
@@ -234,12 +433,14 @@ function dockerBuild(repoRoot, version, settings) {
     DOCKER_FLAG_PROGRESS,
     DEFAULT_PROGRESS,
     DOCKER_FLAG_FILE,
-    settings.dockerfile,
+    settings.file,
   ];
 
   if (settings.platform) {
     args.push(DOCKER_FLAG_PLATFORM, settings.platform);
   }
+
+  args.push(...settings.buildArgFlags);
 
   args.push(DOCKER_FLAG_BUILD_ARG, `APP_VERSION=${version.full}`);
 
@@ -253,8 +454,20 @@ function dockerBuild(repoRoot, version, settings) {
 }
 
 function dockerPush(repoRoot, version, settings) {
-  if (!settings.push) {
+  if (!settings.pushEnabled) {
     console.log("Push disabled");
+    return;
+  }
+
+  if (!isBranchAllowed(settings.currentBranch, settings.pushBranches)) {
+    if (!settings.currentBranch) {
+      console.log("Push skipped: unable to determine current branch");
+      return;
+    }
+
+    console.log(
+      `Push skipped: branch '${settings.currentBranch}' does not match [${settings.pushBranches.join(", ")}]`
+    );
     return;
   }
 
@@ -275,37 +488,43 @@ function main() {
   const cmd = (process.argv[2] || CMD_BUILD).toLowerCase();
   const root = findRepoRoot(process.cwd());
 
-  const config = tryReadJson(path.join(root, BUILD_DIR, BUILD_CONFIG_FILE));
-  if (!config) throw new Error("Missing .dockship/dockship.json");
+  const config = tryReadJson(path.join(root, BUILD_DIR, BUILD_CONFIG_FILE)) || getDefaultBuildConfig();
 
 
   loadDotEnv(root);
 
   const version = getVersion(root);
-  const docker = getDockerSettings(config, process.env);
 
   switch (cmd) {
-    case CMD_BUILD:
+    case CMD_BUILD: {
+      const docker = getDockerSettings(config, process.env, root, { requireImageTarget: true });
       dockerBuild(root, version, docker);
       break;
+    }
 
     case CMD_PUSH:
-    case CMD_SHIP:
+    case CMD_SHIP: {
+      const docker = getDockerSettings(config, process.env, root, { requireImageTarget: true });
       dockerPush(root, version, docker);
       break;
+    }
 
-    case CMD_ALL:
+    case CMD_ALL: {
+      const docker = getDockerSettings(config, process.env, root, { requireImageTarget: true });
       dockerBuild(root, version, docker);
       dockerPush(root, version, docker);
       break;
+    }
 
     case CMD_VERSION:
       console.log(JSON.stringify(version, null, 2));
       break;
 
-    case CMD_TAGS:
+    case CMD_TAGS: {
+      const docker = getDockerSettings(config, process.env, root);
       console.log(JSON.stringify(getTags(version, docker), null, 2));
       break;
+    }
 
     case CMD_HELP:
     default:

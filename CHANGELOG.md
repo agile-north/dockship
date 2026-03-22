@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+* refactor Docker config to nested sections: `docker.target`, `docker.push`, and `docker.tags`
+* add branch-based push filtering via `docker.push.branches` and `DOCKER_PUSH_BRANCHES`
+* rename `docker.dockerfile` to `docker.file` in the preferred config shape
+* make `.dockship/dockship.json` optional by using built-in defaults
+* add `version.provider = "auto"` with automatic NBGV, Node.js, and .NET detection
+* redesign `docker.buildArgs` from a raw CLI string to a structured `{ KEY: value }` object
+* `DOCKER_BUILD_ARGS` env var accepts JSON (`{"KEY":"val"}`) or semicolon-delimited `KEY=value;KEY2=value2` — format is auto-detected
+* legacy raw string value for `docker.buildArgs` is still accepted as a compatibility alias
+* nbgv provider now runs inside a Docker container by default (`version.nbgv.useDocker: true`) — no .NET SDK required on the host; falls back to host dotnet/nbgv when Docker is unavailable
+
+### Migration
+
+Legacy flat keys are still supported as compatibility aliases:
+
+* `docker.dockerfile` → `docker.file`
+* `docker.targetRegistry` → `docker.target.registry`
+* `docker.targetRepository` → `docker.target.repository`
+* `docker.pushEnabled` → `docker.push.enabled`
+* `docker.pushBranches` → `docker.push.branches`
+* `docker.tagLatest` → `docker.tags.latest`
+
 ## [1.1.5](https://github.com/agile-north/dockship/compare/v1.1.4...v1.1.5) (2026-03-20)
 
 
@@ -72,5 +97,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub Actions workflows for CI validation and automated npm publishing
 - Branch-based publish channels: `main` → `latest`, `develop` → `next`
 
-[1.1.0]: https://github.com/agile-north/dockship/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/agile-north/dockship/releases/tag/v1.0.0

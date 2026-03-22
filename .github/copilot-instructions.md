@@ -48,14 +48,15 @@ The `nodejs` and `dotnet` providers are **self-contained** (inline all helpers).
 
 ## Configuration
 
-Consumer projects place config at `.dockship/dockship.json` (not the repo root). The root `dockship.json` in this repo is a reference/template. All Docker settings can be overridden by environment variables. A `.env` file at the **client repo root** (same level as `.git`) is loaded automatically — useful for local development defaults. Priority: CI env vars > `.env` > `dockship.json`:
+Consumer projects may place config at `.dockship/dockship.json` (not the repo root). The root `dockship.json` in this repo is a reference/template. If the client repo does not define `.dockship/dockship.json`, dockship uses built-in defaults and version provider auto-detection. All Docker settings can be overridden by environment variables. A `.env` file at the **client repo root** (same level as `.git`) is loaded automatically — useful for local development defaults. Priority: CI env vars > `.env` > `dockship.json` > built-in defaults:
 
 | Env Var | JSON field |
 |---|---|
-| `DOCKER_TARGET_REGISTRY` | `docker.targetRegistry` |
-| `DOCKER_TARGET_REPOSITORY` | `docker.targetRepository` |
-| `DOCKER_PUSH_ENABLED` | `docker.pushEnabled` |
-| `DOCKER_TAG_LATEST` | `docker.tagLatest` |
+| `DOCKER_TARGET_REGISTRY` | `docker.target.registry` |
+| `DOCKER_TARGET_REPOSITORY` | `docker.target.repository` |
+| `DOCKER_PUSH_ENABLED` | `docker.push.enabled` |
+| `DOCKER_PUSH_BRANCHES` | `docker.push.branches` |
+| `DOCKER_TAG_LATEST` | `docker.tags.latest` |
 
 ## Docker tagging strategy
 

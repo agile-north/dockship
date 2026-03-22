@@ -1,24 +1,30 @@
 {
-  "stack": "dotnet",
-
   "docker": {
-    "dockerfile": "Dockerfile",
+    "file": "Dockerfile",
     "context": ".",
-    "targetRegistry": "",
-    "targetRepository": "",
-    "pushEnabled": false,
-    "tagLatest": false,
+    "target": {
+      "registry": "",
+      "repository": ""
+    },
+    "push": {
+      "enabled": false,
+      "branches": []
+    },
+    "tags": {
+      "latest": false
+    },
     "platform": "",
-    "buildArgs": ""
+    "buildArgs": {}
   },
 
   "version": {
-    "provider": "nbgv",
-    "allowAutoFallback": true,
+    "provider": "auto",
 
     "nbgv": {
       "versionJsonFileName": "version.json",
       "dotnetToolManifestRelativePath": ".config/dotnet-tools.json",
+      "useDocker": true,
+      "dockerImage": "mcr.microsoft.com/dotnet/sdk:latest",
       "allowToolRestore": true,
       "allowGlobalCommand": true,
       "requireVersionJson": true
