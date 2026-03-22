@@ -27,6 +27,13 @@ Perfect for microservices, full-stack apps, and standardized CI/CD across teams.
 
 ## Installation
 
+You can use dockship in two ways:
+
+1. Install as a dev dependency (recommended for repeatable team workflows)
+2. Run directly with `npx` (no local install required)
+
+### Option 1: Install in your project
+
 ```bash
 npm install -D @agile-north/dockship
 ```
@@ -41,6 +48,23 @@ Then add to `package.json` scripts:
     "dock:all": "dock build && dock ship"
   }
 }
+```
+
+### Option 2: Run directly with npx (no install)
+
+```bash
+# Run without adding dockship to package.json
+npx @agile-north/dockship version
+npx @agile-north/dockship build
+npx @agile-north/dockship ship
+npx @agile-north/dockship all
+npx @agile-north/dockship tags
+```
+
+For reproducible CI/local behavior, you can pin a version:
+
+```bash
+npx @agile-north/dockship@1.4.0 version
 ```
 
 ## Automated npm publish (GitHub Actions)
