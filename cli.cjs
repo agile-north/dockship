@@ -18,6 +18,8 @@ const CMD_ALL = "all";
 const CMD_VERSION = "version";
 const CMD_TAGS = "tags";
 const CMD_HELP = "help";
+const FLAG_HELP = "--help";
+const FLAG_HELP_SHORT = "-h";
 
 // Paths
 const BUILD_DIR = ".dockship";
@@ -484,8 +486,66 @@ function dockerPush(repoRoot, version, settings) {
 // =======================
 //
 
+function showHelp() {
+  const help = `
+dock - Docker image versioning, building, and pushing CLI
+
+USAGE:
+  dock [COMMAND]
+
+COMMANDS:
+  build          Build Docker image(s) with version tags (default)
+  ship, push     Push Docker image(s) to registry
+  all            Build and push Docker image(s)
+  version        Output resolved version information as JSON
+  tags           Output computed Docker tags as JSON
+  help, --help   Show this help menu
+
+EXAMPLES:
+  dock build              # Build image with automatic version detection
+  dock ship               # Push image to configured registry
+  dock all                # Build and push in one command
+  dock version            # Display resolved version info
+  dock tags               # Show what tags will be applied
+  dock --help             # Show help menu
+
+CONFIGURATION:
+  Configuration can be set via:
+  1. Environment variables (highest priority)
+  2. .env file in repo root
+  3. .dockship/dockship.json in repo root
+  4. Built-in defaults (lowest priority)
+
+ENVIRONMENT VARIABLES:
+  DOCKER_TARGET_REGISTRY      Docker registry URL (e.g., docker.io)
+  DOCKER_TARGET_REPOSITORY    Image repository (e.g., myorg/myrepo)
+  DOCKER_PUSH_ENABLED         Enable/disable push (true/false)
+  DOCKER_PUSH_BRANCHES        Branches that trigger push (comma-separated)
+  DOCKER_TAG_LATEST           Tag image as 'latest' (true/false)
+  DOCKER_CONTEXT              Docker build context (default: .)
+  DOCKERFILE_PATH             Path to Dockerfile (default: Dockerfile)
+  DOCKER_PLATFORM             Target platform (e.g., linux/amd64)
+  DOCKER_BUILD_ARGS           Build args as KEY=value pairs
+
+VERSION DETECTION:
+  Providers (run in order): Node.js (package.json) → .NET (.csproj) → Nerdbank.GitVersioning
+  Custom providers can be configured in .dockship/dockship.json
+
+For more information, visit: https://github.com/agile-north/dockship
+`;
+
+  console.log(help);
+}
+
 function main() {
   const cmd = (process.argv[2] || CMD_BUILD).toLowerCase();
+
+  // Handle help flags/command early
+  if (cmd === CMD_HELP || cmd === FLAG_HELP || cmd === FLAG_HELP_SHORT) {
+    showHelp();
+    return;
+  }
+
   const root = findRepoRoot(process.cwd());
 
   const config = tryReadJson(path.join(root, BUILD_DIR, BUILD_CONFIG_FILE)) || getDefaultBuildConfig();
@@ -526,10 +586,10 @@ function main() {
       break;
     }
 
-    case CMD_HELP:
     default:
-      console.log("Commands: build | ship (push) | all | version | tags | help");
-      break;
+      console.error(`Unknown command: ${cmd}`);
+      showHelp();
+      process.exit(1);
   }
 }
 
