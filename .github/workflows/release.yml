@@ -41,7 +41,6 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 20
-          registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
         run: npm ci
@@ -97,6 +96,7 @@ jobs:
         shell: bash
         env:
           NODE_AUTH_TOKEN: ""
+          NPM_CONFIG_USERCONFIG: ""
         run: |
           set +e
           npm view "${{ steps.pkg.outputs.name }}@${{ steps.mode.outputs.publish_version }}" version >/dev/null 2>&1
@@ -116,6 +116,7 @@ jobs:
         shell: bash
         env:
           NODE_AUTH_TOKEN: ""
+          NPM_CONFIG_USERCONFIG: ""
         run: |
           if [ -n "$NODE_AUTH_TOKEN" ]; then
             echo "NODE_AUTH_TOKEN is unexpectedly set"
@@ -128,4 +129,5 @@ jobs:
         shell: bash
         env:
           NODE_AUTH_TOKEN: ""
+          NPM_CONFIG_USERCONFIG: ""
         run: npm publish --access public --provenance --tag "${{ steps.mode.outputs.dist_tag }}"
