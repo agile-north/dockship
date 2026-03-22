@@ -6,6 +6,7 @@
 
 ```text
 cli.cjs                          ← CLI entry point; handles all dock commands
+docs/output.md                   ← Canonical JSON output contract for --json/--output json mode
 lib/version/index.cjs            ← Version resolution orchestrator (runs as subprocess)
 lib/version/model.cjs            ← Shared VersionInfo schema + validation helpers
 lib/version/fs.cjs               ← File system helpers (findRepoRoot, readJson, etc.)
@@ -20,6 +21,18 @@ test/helpers.cjs                 ← Shared test utilities (createTempRepo, writ
 ```
 
 **Key design decision:** `cli.cjs` spawns `lib/version/index.cjs` in a **child process** (`execCapture(process.execPath, [scriptPath])`). This isolates version resolution so providers can `process.exit()` cleanly without affecting the CLI process.
+
+## CLI output modes
+
+- Global flags:
+  - `--output human|json`
+  - `--json` (alias of `--output json`)
+- Human mode remains default for interactive use.
+- JSON mode must emit exactly one envelope object on stdout.
+- In JSON mode, command diagnostics may be written to stderr.
+- Status and exit code behavior must follow `docs/output.md`.
+
+When updating command behavior in `cli.cjs`, keep the JSON envelope fields and naming aligned with `docs/output.md`.
 
 ## File format conventions
 
@@ -161,6 +174,30 @@ test("version orchestration auto-detects python for pyproject.toml repos", t => 
   assert.equal(versionInfo.source, "python");
 });
 ```
+
+**CLI JSON contract pattern** (for `cli.cjs`):
+
+```js
+test("version --json emits envelope", t => {
+  const repoRoot = createTempRepo(t);
+  writeJson(path.join(repoRoot, "package.json"), { name: "app", version: "1.2.3" });
+
+  const result = runNodeScript(CLI_PATH, ["version", "--json"], { cwd: repoRoot });
+  assert.equal(result.status, 0);
+
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.outputMode, "json");
+  assert.equal(payload.command, "version");
+  assert.equal(payload.status, "success");
+});
+```
+
+For JSON-mode changes, add tests for:
+
+- envelope fields and status mapping
+- usage errors (`USAGE_ERROR`, exit code `2`)
+- skipped/partial/failed status transitions
+- `all` step parity and top-level artifact behavior
 
 **Fake external command pattern** (for providers that shell out):
 

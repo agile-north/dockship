@@ -21,6 +21,29 @@ const CMD_TAGS = "tags";
 const CMD_HELP = "help";
 const FLAG_HELP = "--help";
 const FLAG_HELP_SHORT = "-h";
+const FLAG_JSON = "--json";
+const FLAG_OUTPUT = "--output";
+
+// Output modes
+const OUTPUT_MODE_HUMAN = "human";
+const OUTPUT_MODE_JSON = "json";
+
+// Result statuses
+const STATUS_SUCCESS = "success";
+const STATUS_SKIPPED = "skipped";
+const STATUS_PARTIAL = "partial";
+const STATUS_FAILED = "failed";
+
+// Exit codes
+const EXIT_OK = 0;
+const EXIT_FAILED = 1;
+const EXIT_USAGE = 2;
+
+// JSON envelope
+const SCHEMA_VERSION = "1";
+const TOOL_NAME = "dockship";
+const UNKNOWN_VALUE = "unknown";
+const NULL_VALUE = null;
 
 // Paths
 const BUILD_DIR = ".dockship";
@@ -98,6 +121,16 @@ const CLEANUP_MODE_FALSE = "false";
 const GIT_CMD = "git";
 const GIT_REV_PARSE = "rev-parse";
 const GIT_ABBREV_REF = "--abbrev-ref";
+const GIT_SHORT = "--short";
+const GIT_CONFIG = "config";
+const GIT_GET = "--get";
+const GIT_REMOTE_ORIGIN_URL = "remote.origin.url";
+
+const STATUS_ERROR_CODE_CONFIG = "CONFIG_ERROR";
+const STATUS_ERROR_CODE_DOCKER_BUILD = "DOCKER_BUILD_FAILED";
+const STATUS_ERROR_CODE_DOCKER_PUSH = "DOCKER_PUSH_FAILED";
+const STATUS_ERROR_CODE_USAGE = "USAGE_ERROR";
+const STATUS_ERROR_CODE_UNKNOWN = "UNKNOWN_ERROR";
 
 function getDefaultBuildConfig() {
   return {
@@ -316,6 +349,105 @@ function splitCommandArgs(value) {
   return parts.filter(Boolean);
 }
 
+function parseOutputMode(value) {
+  const mode = getString(value).toLowerCase();
+
+  if (!mode) {
+    throw new Error(`${FLAG_OUTPUT} requires a value (${OUTPUT_MODE_HUMAN}|${OUTPUT_MODE_JSON})`);
+  }
+
+  if (mode !== OUTPUT_MODE_HUMAN && mode !== OUTPUT_MODE_JSON) {
+    throw new Error(`Unsupported output mode: ${value}. Supported values: ${OUTPUT_MODE_HUMAN}, ${OUTPUT_MODE_JSON}`);
+  }
+
+  return mode;
+}
+
+function hasJsonOutputFlag(argv) {
+  const args = Array.isArray(argv) ? argv : [];
+
+  for (let i = 0; i < args.length; i += 1) {
+    const token = getString(args[i]);
+
+    if (token === FLAG_JSON) {
+      return true;
+    }
+
+    if (token === FLAG_OUTPUT) {
+      const nextValue = getString(args[i + 1]).toLowerCase();
+
+      if (nextValue === OUTPUT_MODE_JSON) {
+        return true;
+      }
+    }
+
+    if (token.startsWith(`${FLAG_OUTPUT}=`) && token.slice(`${FLAG_OUTPUT}=`.length).toLowerCase() === OUTPUT_MODE_JSON) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function parseCliArgs(argv) {
+  const args = Array.isArray(argv) ? argv : [];
+  let command = EMPTY_STRING;
+  let outputMode = OUTPUT_MODE_HUMAN;
+
+  for (let i = 0; i < args.length; i += 1) {
+    const token = getString(args[i]);
+
+    if (!token) {
+      continue;
+    }
+
+    if (token === FLAG_HELP || token === FLAG_HELP_SHORT) {
+      return {
+        command: CMD_HELP,
+        outputMode
+      };
+    }
+
+    if (token === FLAG_JSON) {
+      outputMode = OUTPUT_MODE_JSON;
+      continue;
+    }
+
+    if (token === FLAG_OUTPUT) {
+      const nextValue = args[i + 1];
+
+      if (nextValue === undefined) {
+        throw new Error(`${FLAG_OUTPUT} requires a value (${OUTPUT_MODE_HUMAN}|${OUTPUT_MODE_JSON})`);
+      }
+
+      outputMode = parseOutputMode(nextValue);
+      i += 1;
+      continue;
+    }
+
+    if (token.startsWith(`${FLAG_OUTPUT}=`)) {
+      outputMode = parseOutputMode(token.slice(`${FLAG_OUTPUT}=`.length));
+      continue;
+    }
+
+    if (token.startsWith("-")) {
+      throw new Error(`Unknown option: ${token}`);
+    }
+
+    if (!command) {
+      command = token.toLowerCase();
+      continue;
+    }
+
+    throw new Error(`Unexpected argument: ${token}`);
+  }
+
+  return {
+    command: command || CMD_BUILD,
+    outputMode
+  };
+}
+
 function parseBuildArgsEnv(value) {
   const trimmed = value.trim();
 
@@ -362,18 +494,56 @@ function resolveBuildArgs(env, docker) {
   return [];
 }
 
-function exec(command, args, options = {}) {
-  console.log([command, ...(options.logArgs || args)].join(" "));
-  const res = cp.spawnSync(command, args, {
-    stdio: options.input === undefined ? "inherit" : ["pipe", "inherit", "inherit"],
+function runCommand(command, args, options = {}) {
+  const outputMode = options.outputMode || OUTPUT_MODE_HUMAN;
+
+  if (outputMode === OUTPUT_MODE_HUMAN) {
+    console.log([command, ...(options.logArgs || args)].join(" "));
+  }
+
+  const spawnOptions = {
     cwd: options.cwd || process.cwd(),
     env: options.env || process.env,
     input: options.input,
-  });
+  };
 
-  if (res.status !== 0) {
+  if (outputMode === OUTPUT_MODE_JSON) {
+    spawnOptions.stdio = options.input === undefined ? ["ignore", "pipe", "pipe"] : ["pipe", "pipe", "pipe"];
+    spawnOptions.encoding = "utf8";
+  } else {
+    spawnOptions.stdio = options.input === undefined ? "inherit" : ["pipe", "inherit", "inherit"];
+  }
+
+  const res = cp.spawnSync(command, args, spawnOptions);
+  const stdout = getString(res.stdout);
+  const stderr = getString(res.stderr);
+
+  if (outputMode === OUTPUT_MODE_JSON) {
+    if (stdout) {
+      process.stderr.write(`${stdout}${stdout.endsWith("\n") ? EMPTY_STRING : "\n"}`);
+    }
+
+    if (stderr) {
+      process.stderr.write(`${stderr}${stderr.endsWith("\n") ? EMPTY_STRING : "\n"}`);
+    }
+  }
+
+  return {
+    ok: res.status === 0,
+    status: res.status,
+    stdout,
+    stderr,
+  };
+}
+
+function exec(command, args, options = {}) {
+  const result = runCommand(command, args, options);
+
+  if (!result.ok) {
     throw new Error(`${command} failed`);
   }
+
+  return result;
 }
 
 function execCapture(command, args, options = {}) {
@@ -441,7 +611,7 @@ function normalizeBranchName(branchName) {
   return branch;
 }
 
-function tryGetCurrentBranch(repoRoot, env) {
+function getCurrentBranchInfo(repoRoot, env) {
   const envBranch =
     env[ENV_GITHUB_HEAD_REF] ||
     env[ENV_GITHUB_REF_NAME] ||
@@ -455,17 +625,78 @@ function tryGetCurrentBranch(repoRoot, env) {
   const normalizedEnvBranch = normalizeBranchName(envBranch);
 
   if (normalizedEnvBranch) {
-    return normalizedEnvBranch;
+    return {
+      branch: normalizedEnvBranch,
+      source: "env",
+      inputBranch: getString(envBranch)
+    };
   }
 
   try {
     const branch = execCapture(GIT_CMD, [GIT_REV_PARSE, GIT_ABBREV_REF, GIT_HEAD], { cwd: repoRoot });
     const normalizedBranch = normalizeBranchName(branch);
 
-    return normalizedBranch === GIT_HEAD ? EMPTY_STRING : normalizedBranch;
+    if (normalizedBranch === GIT_HEAD || !normalizedBranch) {
+      return {
+        branch: EMPTY_STRING,
+        source: UNKNOWN_VALUE,
+        inputBranch: getString(branch)
+      };
+    }
+
+    return {
+      branch: normalizedBranch,
+      source: "git",
+      inputBranch: getString(branch)
+    };
+  } catch {
+    return {
+      branch: EMPTY_STRING,
+      source: UNKNOWN_VALUE,
+      inputBranch: EMPTY_STRING
+    };
+  }
+}
+
+function tryGetCurrentBranch(repoRoot, env) {
+  return getCurrentBranchInfo(repoRoot, env).branch;
+}
+
+function tryGetCommit(repoRoot) {
+  try {
+    return execCapture(GIT_CMD, [GIT_REV_PARSE, GIT_SHORT, GIT_HEAD], { cwd: repoRoot });
   } catch {
     return EMPTY_STRING;
   }
+}
+
+function tryGetRemoteUrl(repoRoot) {
+  try {
+    return execCapture(GIT_CMD, [GIT_CONFIG, GIT_GET, GIT_REMOTE_ORIGIN_URL], { cwd: repoRoot });
+  } catch {
+    return EMPTY_STRING;
+  }
+}
+
+function parseRepositoryFromRemote(remoteUrl) {
+  const url = getString(remoteUrl);
+
+  if (!url) {
+    return EMPTY_STRING;
+  }
+
+  const normalized = url
+    .replace(/^git@github\.com:/i, "https://github.com/")
+    .replace(/^ssh:\/\/git@github\.com\//i, "https://github.com/")
+    .replace(/\.git$/i, EMPTY_STRING);
+
+  const match = normalized.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+)$/i);
+
+  if (!match) {
+    return EMPTY_STRING;
+  }
+
+  return `${match[1]}/${match[2]}`;
 }
 
 function escapeRegex(text) {
@@ -499,7 +730,7 @@ function getDockerSettings(config, env, repoRoot, options = {}) {
 
   const registry = getString(env[ENV_DOCKER_REGISTRY], getNestedValue(target.registry, docker.targetRegistry));
   const repo = getString(env[ENV_DOCKER_REPOSITORY], getNestedValue(target.repository, docker.targetRepository));
-  const currentBranch = tryGetCurrentBranch(repoRoot, env);
+  const branchInfo = getCurrentBranchInfo(repoRoot, env);
   const pushBranches = getStringArray(
     env[ENV_DOCKER_PUSH_BRANCHES],
     getNestedValue(push.branches, docker.pushBranches)
@@ -517,7 +748,9 @@ function getDockerSettings(config, env, repoRoot, options = {}) {
     file: getString(env[ENV_DOCKERFILE_PATH], getNestedValue(docker.file, docker.dockerfile) || DEFAULT_DOCKERFILE),
     pushEnabled: normalizeBool(env[ENV_DOCKER_PUSH_ENABLED], getNestedValue(push.enabled, docker.pushEnabled)),
     pushBranches,
-    currentBranch,
+    currentBranch: branchInfo.branch,
+    currentBranchSource: branchInfo.source,
+    inputBranch: branchInfo.inputBranch,
     latest: normalizeBool(env[ENV_DOCKER_TAG_LATEST], getNestedValue(tags.latest, docker.tagLatest)),
     cleanupLocal: resolveCleanupLocal(env, getNestedValue(cleanup.local, DEFAULT_CLEANUP_LOCAL_MODE)),
     platform: getString(env[ENV_DOCKER_PLATFORM], docker.platform),
@@ -596,7 +829,7 @@ function withDockerAuth(repoRoot, env, settings, action) {
   }
 }
 
-function dockerBuild(repoRoot, version, settings, env) {
+function dockerBuild(repoRoot, version, settings, env, outputMode = OUTPUT_MODE_HUMAN) {
   const tags = getTags(version, settings);
 
   const args = [
@@ -621,10 +854,10 @@ function dockerBuild(repoRoot, version, settings, env) {
 
   args.push(settings.context);
 
-  exec(DOCKER_CMD, args, { cwd: repoRoot, env });
+  exec(DOCKER_CMD, args, { cwd: repoRoot, env, outputMode });
 }
 
-function dockerPush(repoRoot, version, settings, env) {
+function dockerPush(repoRoot, version, settings, env, outputMode = OUTPUT_MODE_HUMAN) {
   if (!settings.pushEnabled) {
     console.log("Push disabled");
     return;
@@ -645,20 +878,405 @@ function dockerPush(repoRoot, version, settings, env) {
   const tags = getTags(version, settings);
 
   tags.forEach(t => {
-    exec(DOCKER_CMD, [DOCKER_PUSH, `${settings.image}:${t}`], { cwd: repoRoot, env });
+    exec(DOCKER_CMD, [DOCKER_PUSH, `${settings.image}:${t}`], { cwd: repoRoot, env, outputMode });
   });
 }
 
-function dockerCleanupLocalImages(repoRoot, version, settings, env) {
+function dockerCleanupLocalImages(repoRoot, version, settings, env, outputMode = OUTPUT_MODE_HUMAN) {
   if (!settings.cleanupLocal) {
-    return;
+    return [];
   }
 
   const tags = getTags(version, settings);
+  const removed = [];
 
   tags.forEach(tag => {
-    exec(DOCKER_CMD, [DOCKER_IMAGE, DOCKER_RM, `${settings.image}:${tag}`], { cwd: repoRoot, env });
+    const reference = `${settings.image}:${tag}`;
+    exec(DOCKER_CMD, [DOCKER_IMAGE, DOCKER_RM, reference], { cwd: repoRoot, env, outputMode });
+    removed.push(reference);
   });
+
+  return removed;
+}
+
+function getToolVersion() {
+  try {
+    return require("./package.json").version || EMPTY_STRING;
+  } catch {
+    return EMPTY_STRING;
+  }
+}
+
+function createError(code, message, details = {}) {
+  return {
+    code,
+    message,
+    details
+  };
+}
+
+function getStatusExitCode(status, usageError = false) {
+  if (usageError) {
+    return EXIT_USAGE;
+  }
+
+  if (status === STATUS_SUCCESS || status === STATUS_SKIPPED) {
+    return EXIT_OK;
+  }
+
+  return EXIT_FAILED;
+}
+
+function buildVersionResult(version) {
+  const patch = getString(version.build);
+
+  return {
+    ...version,
+    patch,
+    components: {
+      major: getString(version.major),
+      minor: getString(version.minor),
+      patch,
+      suffix: getString(version.suffix)
+    }
+  };
+}
+
+function buildArtifact(version, settings, digestValue = NULL_VALUE) {
+  const registry = getString(settings.registry);
+  const repository = getString(settings.repository);
+  const imageName = registry && repository ? `${registry}/${repository}` : EMPTY_STRING;
+  const tags = getTags(version, settings);
+  const primaryTag = tags[0] || getString(version.version);
+  const reference = imageName && primaryTag ? `${imageName}:${primaryTag}` : NULL_VALUE;
+  const references = imageName
+    ? tags.map(tag => `${imageName}:${tag}`)
+    : [];
+  const digestReference = imageName && digestValue ? `${imageName}@${digestValue}` : NULL_VALUE;
+
+  return {
+    version: getString(version.version),
+    id: digestReference,
+    image: {
+      registry: registry || NULL_VALUE,
+      repository: repository || NULL_VALUE,
+      reference,
+      primaryTag,
+      tag: primaryTag,
+      tags,
+      references,
+      digest: {
+        value: digestValue || NULL_VALUE,
+        reference: digestReference
+      }
+    }
+  };
+}
+
+function buildMetadata(settings) {
+  const platform = getString(settings.platform);
+
+  return {
+    platforms: platform ? [platform] : []
+  };
+}
+
+function getGitContext(repoRoot, env) {
+  const branchInfo = getCurrentBranchInfo(repoRoot, env);
+  const remoteUrl = tryGetRemoteUrl(repoRoot);
+
+  return {
+    branch: branchInfo.branch || NULL_VALUE,
+    branchSource: branchInfo.source || UNKNOWN_VALUE,
+    commit: tryGetCommit(repoRoot) || NULL_VALUE,
+    repository: parseRepositoryFromRemote(remoteUrl) || NULL_VALUE,
+    remoteUrl: remoteUrl || NULL_VALUE
+  };
+}
+
+function createEnvelope(command, outputMode, status, startedAt, repoRoot, env, result, warnings, errors) {
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    command,
+    outputMode,
+    success: status === STATUS_SUCCESS || status === STATUS_SKIPPED,
+    status,
+    timestamp: new Date().toISOString(),
+    durationMs: Math.max(0, Date.now() - startedAt),
+    tool: {
+      name: TOOL_NAME,
+      version: getToolVersion()
+    },
+    context: {
+      repoRoot,
+      git: getGitContext(repoRoot, env)
+    },
+    result,
+    warnings,
+    errors
+  };
+}
+
+function executePushDetailed(repoRoot, version, settings, env, commandType, outputMode, warnings, errors) {
+  const artifact = buildArtifact(version, settings);
+  const requestedReferences = artifact.image.references;
+  const pushedReferences = [];
+  const failedReferences = [];
+  let skipped = false;
+  let skipReason = NULL_VALUE;
+
+  if (!settings.pushEnabled) {
+    skipped = true;
+    skipReason = "push_disabled";
+
+    if (outputMode === OUTPUT_MODE_HUMAN) {
+      console.log("Push disabled");
+    }
+  } else if (!isBranchAllowed(settings.currentBranch, settings.pushBranches)) {
+    skipped = true;
+
+    if (!settings.currentBranch) {
+      skipReason = "branch_unknown";
+
+      if (outputMode === OUTPUT_MODE_HUMAN) {
+        console.log("Push skipped: unable to determine current branch");
+      }
+    } else {
+      skipReason = "branch_not_allowed";
+
+      if (outputMode === OUTPUT_MODE_HUMAN) {
+        console.log(
+          `Push skipped: branch '${settings.currentBranch}' does not match [${settings.pushBranches.join(", ")}]`
+        );
+      }
+    }
+  } else {
+    requestedReferences.forEach(reference => {
+      const result = runCommand(DOCKER_CMD, [DOCKER_PUSH, reference], {
+        cwd: repoRoot,
+        env,
+        outputMode
+      });
+
+      if (result.ok) {
+        pushedReferences.push(reference);
+        return;
+      }
+
+      failedReferences.push(reference);
+      errors.push(createError(STATUS_ERROR_CODE_DOCKER_PUSH, `Failed to push ${reference}`, { reference }));
+    });
+  }
+
+  let status = STATUS_SUCCESS;
+
+  if (skipped) {
+    status = STATUS_SKIPPED;
+  } else if (failedReferences.length > 0 && pushedReferences.length > 0) {
+    status = STATUS_PARTIAL;
+  } else if (failedReferences.length > 0) {
+    status = STATUS_FAILED;
+  }
+
+  if (!skipped) {
+    const knownReferences = new Set([...pushedReferences, ...failedReferences]);
+    const missingReferences = requestedReferences.filter(reference => !knownReferences.has(reference));
+
+    if (missingReferences.length > 0) {
+      status = STATUS_FAILED;
+      errors.push(
+        createError(STATUS_ERROR_CODE_DOCKER_PUSH, "Push results missing requested references", {
+          missingReferences
+        })
+      );
+    }
+  }
+
+  return {
+    status,
+    artifact,
+    operation: {
+      type: commandType,
+      performed: !skipped,
+      skipped,
+      skipReason,
+      push: {
+        requestedReferences,
+        pushedReferences,
+        failedReferences
+      },
+      policy: {
+        pushEnabled: settings.pushEnabled,
+        branch: settings.currentBranch || NULL_VALUE,
+        branchSource: settings.currentBranchSource || UNKNOWN_VALUE,
+        inputBranch: settings.inputBranch || NULL_VALUE
+      }
+    },
+    metadata: buildMetadata(settings)
+  };
+}
+
+function executeJsonCommand(command, root, config, version, env) {
+  const warnings = [];
+  const errors = [];
+
+  switch (command) {
+    case CMD_VERSION: {
+      return {
+        status: STATUS_SUCCESS,
+        result: buildVersionResult(version),
+        warnings,
+        errors
+      };
+    }
+
+    case CMD_TAGS: {
+      const docker = getDockerSettings(config, env, root);
+
+      return {
+        status: STATUS_SUCCESS,
+        result: {
+          artifact: buildArtifact(version, docker),
+          latestIncluded: getTags(version, docker).includes("latest")
+        },
+        warnings,
+        errors
+      };
+    }
+
+    case CMD_BUILD: {
+      const docker = getDockerSettings(config, env, root, { requireImageTarget: true });
+      let removedReferences = [];
+
+      withDockerAuth(root, env, docker, authEnv => {
+        try {
+          dockerBuild(root, version, docker, authEnv, OUTPUT_MODE_JSON);
+        } finally {
+          removedReferences = dockerCleanupLocalImages(root, version, docker, authEnv, OUTPUT_MODE_JSON);
+        }
+      });
+
+      return {
+        status: STATUS_SUCCESS,
+        result: {
+          artifact: buildArtifact(version, docker),
+          operation: {
+            type: CMD_BUILD,
+            performed: true,
+            cleanup: {
+              enabled: docker.cleanupLocal,
+              removedReferences
+            }
+          },
+          metadata: buildMetadata(docker)
+        },
+        warnings,
+        errors
+      };
+    }
+
+    case CMD_PUSH:
+    case CMD_SHIP: {
+      const docker = getDockerSettings(config, env, root, { requireImageTarget: true });
+      let pushResult;
+
+      withDockerAuth(root, env, docker, authEnv => {
+        pushResult = executePushDetailed(root, version, docker, authEnv, command, OUTPUT_MODE_JSON, warnings, errors);
+      });
+
+      return {
+        status: pushResult.status,
+        result: {
+          artifact: pushResult.artifact,
+          operation: pushResult.operation,
+          metadata: pushResult.metadata
+        },
+        warnings,
+        errors
+      };
+    }
+
+    case CMD_ALL: {
+      const docker = getDockerSettings(config, env, root, { requireImageTarget: true });
+      const stepStartedAtBuild = Date.now();
+      let buildStep;
+      let pushStep;
+      let removedReferences = [];
+
+      withDockerAuth(root, env, docker, authEnv => {
+        try {
+          dockerBuild(root, version, docker, authEnv, OUTPUT_MODE_JSON);
+          buildStep = {
+            durationMs: Math.max(0, Date.now() - stepStartedAtBuild),
+            artifact: buildArtifact(version, docker),
+            operation: {
+              type: CMD_BUILD,
+              performed: true,
+              cleanup: {
+                enabled: docker.cleanupLocal,
+                removedReferences: []
+              }
+            },
+            metadata: buildMetadata(docker)
+          };
+
+          const stepStartedAtPush = Date.now();
+          pushStep = executePushDetailed(root, version, docker, authEnv, CMD_PUSH, OUTPUT_MODE_JSON, warnings, errors);
+          pushStep = {
+            durationMs: Math.max(0, Date.now() - stepStartedAtPush),
+            artifact: pushStep.artifact,
+            operation: pushStep.operation,
+            metadata: pushStep.metadata,
+            status: pushStep.status
+          };
+        } finally {
+          removedReferences = dockerCleanupLocalImages(root, version, docker, authEnv, OUTPUT_MODE_JSON);
+        }
+      });
+
+      if (buildStep) {
+        buildStep.operation.cleanup.removedReferences = removedReferences;
+      }
+
+      let status = STATUS_SUCCESS;
+
+      if (pushStep && pushStep.status === STATUS_FAILED) {
+        status = STATUS_FAILED;
+      } else if (pushStep && pushStep.status === STATUS_PARTIAL) {
+        status = STATUS_PARTIAL;
+      }
+
+      const topArtifact = pushStep && pushStep.operation && !pushStep.operation.skipped
+        ? pushStep.artifact
+        : buildStep.artifact;
+
+      return {
+        status,
+        result: {
+          artifact: topArtifact,
+          steps: {
+            build: {
+              durationMs: buildStep.durationMs,
+              artifact: buildStep.artifact,
+              operation: buildStep.operation,
+              metadata: buildStep.metadata
+            },
+            push: {
+              durationMs: pushStep.durationMs,
+              artifact: pushStep.artifact,
+              operation: pushStep.operation,
+              metadata: pushStep.metadata
+            }
+          }
+        },
+        warnings,
+        errors
+      };
+    }
+
+    default:
+      throw new Error(`Unknown command: ${command}`);
+  }
 }
 
 //
@@ -672,7 +1290,7 @@ function showHelp() {
 dock - Docker image versioning, building, and pushing CLI
 
 USAGE:
-  dock [COMMAND]
+  dock [COMMAND] [--json|--output json|--output human]
 
 COMMANDS:
   build          Build Docker image(s) with version tags (default)
@@ -688,6 +1306,8 @@ EXAMPLES:
   dock all                # Build and push in one command
   dock version            # Display resolved version info
   dock tags               # Show what tags will be applied
+  dock build --json       # Emit machine-readable JSON envelope
+  dock --output json all  # Build and push with JSON output
   dock --help             # Show help menu
 
 CONFIGURATION:
@@ -732,7 +1352,39 @@ For more information, visit: https://github.com/agile-north/dockship
 }
 
 function main() {
-  const cmd = (process.argv[2] || CMD_BUILD).toLowerCase();
+  const rawArgs = process.argv.slice(2);
+  let parsed;
+
+  try {
+    parsed = parseCliArgs(rawArgs);
+  } catch (err) {
+    if (!hasJsonOutputFlag(rawArgs)) {
+      throw err;
+    }
+
+    const startedAt = Date.now();
+    const repoRoot = findRepoRoot(process.cwd());
+    const errorMessage = err && err.message ? err.message : String(err);
+    const envelope = createEnvelope(
+      CMD_HELP,
+      OUTPUT_MODE_JSON,
+      STATUS_FAILED,
+      startedAt,
+      repoRoot,
+      process.env,
+      {},
+      [],
+      [createError(STATUS_ERROR_CODE_USAGE, errorMessage, {})]
+    );
+
+    console.log(JSON.stringify(envelope, null, 2));
+    process.exitCode = EXIT_USAGE;
+    return envelope;
+  }
+
+  const cmd = parsed.command;
+  const outputMode = parsed.outputMode;
+  const startedAt = Date.now();
 
   // Handle help flags/command early
   if (cmd === CMD_HELP || cmd === FLAG_HELP || cmd === FLAG_HELP_SHORT) {
@@ -749,14 +1401,59 @@ function main() {
 
   const version = getVersion(root);
 
+  if (outputMode === OUTPUT_MODE_JSON) {
+    try {
+      const executed = executeJsonCommand(cmd, root, config, version, process.env);
+      const envelope = createEnvelope(
+        cmd,
+        OUTPUT_MODE_JSON,
+        executed.status,
+        startedAt,
+        root,
+        process.env,
+        executed.result,
+        executed.warnings,
+        executed.errors
+      );
+
+      console.log(JSON.stringify(envelope, null, 2));
+      process.exitCode = getStatusExitCode(executed.status);
+      return envelope;
+    } catch (err) {
+      const errorMessage = err && err.message ? err.message : String(err);
+      const usageError = /^Unknown command:|^Unknown option:|^Unexpected argument:|^--output requires|^Unsupported output mode:/.test(errorMessage);
+      const envelope = createEnvelope(
+        cmd,
+        OUTPUT_MODE_JSON,
+        STATUS_FAILED,
+        startedAt,
+        root,
+        process.env,
+        {},
+        [],
+        [
+          createError(
+            usageError ? STATUS_ERROR_CODE_USAGE : STATUS_ERROR_CODE_UNKNOWN,
+            errorMessage,
+            {}
+          )
+        ]
+      );
+
+      console.log(JSON.stringify(envelope, null, 2));
+      process.exitCode = getStatusExitCode(STATUS_FAILED, usageError);
+      return envelope;
+    }
+  }
+
   switch (cmd) {
     case CMD_BUILD: {
       const docker = getDockerSettings(config, process.env, root, { requireImageTarget: true });
       withDockerAuth(root, process.env, docker, authEnv => {
         try {
-          dockerBuild(root, version, docker, authEnv);
+          dockerBuild(root, version, docker, authEnv, OUTPUT_MODE_HUMAN);
         } finally {
-          dockerCleanupLocalImages(root, version, docker, authEnv);
+          dockerCleanupLocalImages(root, version, docker, authEnv, OUTPUT_MODE_HUMAN);
         }
       });
       break;
@@ -766,7 +1463,7 @@ function main() {
     case CMD_SHIP: {
       const docker = getDockerSettings(config, process.env, root, { requireImageTarget: true });
       withDockerAuth(root, process.env, docker, authEnv => {
-        dockerPush(root, version, docker, authEnv);
+        dockerPush(root, version, docker, authEnv, OUTPUT_MODE_HUMAN);
       });
       break;
     }
@@ -775,17 +1472,17 @@ function main() {
       const docker = getDockerSettings(config, process.env, root, { requireImageTarget: true });
       withDockerAuth(root, process.env, docker, authEnv => {
         try {
-          dockerBuild(root, version, docker, authEnv);
-          dockerPush(root, version, docker, authEnv);
+          dockerBuild(root, version, docker, authEnv, OUTPUT_MODE_HUMAN);
+          dockerPush(root, version, docker, authEnv, OUTPUT_MODE_HUMAN);
         } finally {
-          dockerCleanupLocalImages(root, version, docker, authEnv);
+          dockerCleanupLocalImages(root, version, docker, authEnv, OUTPUT_MODE_HUMAN);
         }
       });
       break;
     }
 
     case CMD_VERSION:
-      console.log(JSON.stringify(version, null, 2));
+      console.log(JSON.stringify(buildVersionResult(version), null, 2));
       break;
 
     case CMD_TAGS: {
@@ -797,7 +1494,7 @@ function main() {
     default:
       console.error(`Unknown command: ${cmd}`);
       showHelp();
-      process.exit(1);
+      process.exit(EXIT_USAGE);
   }
 }
 

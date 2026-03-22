@@ -64,6 +64,7 @@ function runCliMain(repoRoot, command, options = {}) {
   const originalConsoleLog = console.log;
   const originalConsoleError = console.error;
   const originalEnv = { ...process.env };
+  const originalExitCode = process.exitCode;
   const stdout = [];
   const stderr = [];
   const dockerCommands = [];
@@ -80,6 +81,11 @@ function runCliMain(repoRoot, command, options = {}) {
         env: spawnOptions.env || process.env,
         input: spawnOptions.input
       });
+
+      if (typeof options.dockerResultFactory === "function") {
+        return options.dockerResultFactory(args, spawnOptions);
+      }
+
       return {
         status: 0,
         stdout: "",
@@ -90,8 +96,10 @@ function runCliMain(repoRoot, command, options = {}) {
     return originalSpawnSync(spawnCommand, args, spawnOptions);
   };
 
-  process.argv = [process.execPath, CLI_PATH, command];
+  const commandArgs = Array.isArray(command) ? command : [command];
+  process.argv = [process.execPath, CLI_PATH, ...commandArgs];
   process.chdir(repoRoot);
+  process.exitCode = 0;
 
   for (const key of CLI_ENV_KEYS) {
     delete process.env[key];
@@ -111,8 +119,10 @@ function runCliMain(repoRoot, command, options = {}) {
     const cli = require("../cli.cjs");
     cli.main();
 
+    const statusCode = process.exitCode || 0;
+
     return {
-      status: 0,
+      status: statusCode,
       stdout: stdout.join("\n"),
       stderr: stderr.join("\n"),
       dockerCommands,
@@ -130,6 +140,7 @@ function runCliMain(repoRoot, command, options = {}) {
     cp.spawnSync = originalSpawnSync;
     process.argv = originalArgv;
     process.chdir(originalCwd);
+    process.exitCode = originalExitCode;
 
     for (const key of Object.keys(process.env)) {
       delete process.env[key];
@@ -159,6 +170,314 @@ test("tags command returns version, major, major.minor, and latest", t => {
 
   assert.equal(result.status, 0, result.stderr || "Expected cli tags command to succeed");
   assert.deepEqual(JSON.parse(result.stdout), ["1.2.3", "1", "1.2", "latest"]);
+});
+
+test("version command supports --json envelope with patch/build compatibility", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  const result = runNodeScript(CLI_PATH, ["version", "--json"], { cwd: repoRoot });
+
+  assert.equal(result.status, 0, result.stderr || "Expected cli version --json command to succeed");
+
+  const payload = JSON.parse(result.stdout);
+
+  assert.equal(payload.schemaVersion, "1");
+  assert.equal(payload.command, "version");
+  assert.equal(payload.outputMode, "json");
+  assert.equal(payload.success, true);
+  assert.equal(payload.status, "success");
+  assert.equal(payload.result.build, "3");
+  assert.equal(payload.result.patch, "3");
+  assert.equal(payload.result.components.patch, payload.result.patch);
+});
+
+test("tags command supports --output json envelope", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      tags: {
+        latest: true
+      }
+    }
+  });
+
+  const result = runNodeScript(CLI_PATH, ["tags", "--output", "json"], { cwd: repoRoot });
+
+  assert.equal(result.status, 0, result.stderr || "Expected cli tags --output json command to succeed");
+
+  const payload = JSON.parse(result.stdout);
+
+  assert.equal(payload.schemaVersion, "1");
+  assert.equal(payload.command, "tags");
+  assert.equal(payload.outputMode, "json");
+  assert.equal(payload.success, true);
+  assert.deepEqual(payload.result.artifact.image.tags, ["1.2.3", "1", "1.2", "latest"]);
+  assert.equal(payload.result.latestIncluded, true);
+});
+
+test("push --json reports partial status when some refs fail", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      },
+      push: {
+        enabled: true,
+        branches: ["main"]
+      },
+      tags: {
+        latest: true
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["push", "--json"], {
+    env: {
+      DOCKER_TARGET_REGISTRY: "ghcr.io",
+      DOCKER_TARGET_REPOSITORY: "acme/widget",
+      DOCKER_PUSH_ENABLED: "true",
+      GITHUB_REF_NAME: "main"
+    },
+    dockerResultFactory: args => {
+      const target = args[1] || "";
+
+      if (args[0] === "push" && target.endsWith(":1")) {
+        return {
+          status: 1,
+          stdout: "",
+          stderr: ""
+        };
+      }
+
+      return {
+        status: 0,
+        stdout: "",
+        stderr: ""
+      };
+    }
+  });
+
+  assert.equal(result.status, 1, "Expected partial push to exit with code 1");
+
+  const payload = JSON.parse(result.stdout);
+
+  assert.equal(payload.command, "push");
+  assert.equal(payload.status, "partial");
+  assert.equal(payload.success, false);
+  assert.ok(payload.result.operation.push.pushedReferences.length > 0);
+  assert.ok(payload.result.operation.push.failedReferences.length > 0);
+});
+
+test("all --json exposes top-level artifact equal to push artifact when push performed", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      },
+      push: {
+        enabled: true,
+        branches: ["main"]
+      },
+      tags: {
+        latest: true
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["all", "--json"], {
+    env: {
+      DOCKER_TARGET_REGISTRY: "ghcr.io",
+      DOCKER_TARGET_REPOSITORY: "acme/widget",
+      DOCKER_PUSH_ENABLED: "true",
+      GITHUB_REF_NAME: "main"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected all --json command to succeed");
+
+  const payload = JSON.parse(result.stdout);
+
+  assert.equal(payload.command, "all");
+  assert.equal(payload.status, "success");
+  assert.equal(payload.result.steps.push.operation.skipped, false);
+  assert.deepEqual(payload.result.artifact, payload.result.steps.push.artifact);
+});
+
+test("json usage errors return USAGE_ERROR with exit code 2", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  const result = runNodeScript(CLI_PATH, ["--json", "--output", "nope"], { cwd: repoRoot });
+
+  assert.equal(result.status, 2, "Expected usage errors to return exit code 2 in json mode");
+
+  const payload = JSON.parse(result.stdout);
+
+  assert.equal(payload.outputMode, "json");
+  assert.equal(payload.status, "failed");
+  assert.equal(payload.success, false);
+  assert.equal(payload.errors[0].code, "USAGE_ERROR");
+});
+
+test("push --json returns skipped when push is disabled", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  const result = runCliMain(repoRoot, ["push", "--json"], {
+    env: {
+      DOCKER_TARGET_REGISTRY: "ghcr.io",
+      DOCKER_TARGET_REPOSITORY: "acme/widget",
+      DOCKER_PUSH_ENABLED: "false",
+      GITHUB_REF_NAME: "main"
+    }
+  });
+
+  assert.equal(result.status, 0, "Expected skipped push to exit with code 0");
+
+  const payload = JSON.parse(result.stdout);
+
+  assert.equal(payload.command, "push");
+  assert.equal(payload.status, "skipped");
+  assert.equal(payload.success, true);
+  assert.equal(payload.result.operation.performed, false);
+  assert.equal(payload.result.operation.skipped, true);
+  assert.equal(payload.result.operation.skipReason, "push_disabled");
+});
+
+test("push --json returns skipped for disallowed branch", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      },
+      push: {
+        enabled: true,
+        branches: ["main"]
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["push", "--json"], {
+    env: {
+      DOCKER_TARGET_REGISTRY: "ghcr.io",
+      DOCKER_TARGET_REPOSITORY: "acme/widget",
+      GITHUB_REF_NAME: "feature/demo"
+    }
+  });
+
+  assert.equal(result.status, 0, "Expected skipped branch push to exit with code 0");
+
+  const payload = JSON.parse(result.stdout);
+
+  assert.equal(payload.status, "skipped");
+  assert.equal(payload.result.operation.skipped, true);
+  assert.equal(payload.result.operation.skipReason, "branch_not_allowed");
+  assert.equal(payload.result.operation.policy.branch, "feature/demo");
+});
+
+test("ship --json uses operation type ship", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  const result = runCliMain(repoRoot, ["ship", "--json"], {
+    env: {
+      DOCKER_TARGET_REGISTRY: "ghcr.io",
+      DOCKER_TARGET_REPOSITORY: "acme/widget",
+      DOCKER_PUSH_ENABLED: "true",
+      GITHUB_REF_NAME: "main"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected ship --json command to succeed");
+
+  const payload = JSON.parse(result.stdout);
+
+  assert.equal(payload.command, "ship");
+  assert.equal(payload.result.operation.type, "ship");
+});
+
+test("all --json with skipped push keeps success and uses build artifact as top artifact", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  const result = runCliMain(repoRoot, ["all", "--json"], {
+    env: {
+      DOCKER_TARGET_REGISTRY: "ghcr.io",
+      DOCKER_TARGET_REPOSITORY: "acme/widget",
+      DOCKER_PUSH_ENABLED: "false",
+      GITHUB_REF_NAME: "main"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected all --json command to succeed when push is skipped");
+
+  const payload = JSON.parse(result.stdout);
+
+  assert.equal(payload.status, "success");
+  assert.equal(payload.result.steps.push.operation.skipped, true);
+  assert.equal(payload.result.steps.push.operation.skipReason, "push_disabled");
+  assert.deepEqual(payload.result.artifact, payload.result.steps.build.artifact);
+});
+
+test("build --json reports cleanup removed references when enabled", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      },
+      tags: {
+        latest: true
+      },
+      cleanup: {
+        local: true
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["build", "--json"], {
+    env: {
+      DOCKER_TARGET_REGISTRY: "ghcr.io",
+      DOCKER_TARGET_REPOSITORY: "acme/widget"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected build --json command to succeed");
+
+  const payload = JSON.parse(result.stdout);
+
+  assert.equal(payload.result.operation.type, "build");
+  assert.equal(payload.result.operation.cleanup.enabled, true);
+  assert.ok(payload.result.operation.cleanup.removedReferences.length >= 3);
+  assert.ok(payload.result.operation.cleanup.removedReferences.includes("ghcr.io/acme/widget:1.2.3"));
 });
 
 test("build command passes expected docker arguments", t => {
