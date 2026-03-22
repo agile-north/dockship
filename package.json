@@ -1,6 +1,6 @@
 {
   "name": "@agile-north/dockship",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "description": "Docker container versioning, building, and publishing CLI for opinionated CI/CD",
   "private": false,
   "type": "commonjs",
