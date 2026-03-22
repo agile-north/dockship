@@ -91,8 +91,17 @@ CI validation:
 Local validation:
 
 ```bash
+npm run lint:md
 npm test
 ```
+
+Optional (recommended) one-time setup to enforce markdown lint before commits:
+
+```bash
+npm run hooks:install
+```
+
+Hooks are installed automatically on `npm install` via the `prepare` script.
 
 Authentication options:
 
@@ -561,7 +570,7 @@ When `loadProvider` runs for a given name it tries in order:
 
 Drop the provider file anywhere in your repo — `.dockship/` is a natural home — and reference it with a relative path:
 
-```
+```text
 your-repo/
 ├── .dockship/
 │   ├── dockship.json

@@ -15,6 +15,9 @@ cd dockship
 npm install
 ```
 
+`npm install` runs `prepare`, which configures Git to use repo-managed hooks in `.githooks/` automatically.
+If needed, you can run it manually with `npm run hooks:install`.
+
 ## Branch model
 
 | Branch      | Purpose                    |
@@ -62,6 +65,15 @@ Include:
 - CommonJS (`.cjs`) modules — no ESM changes without discussion
 - No external runtime dependencies — keep the package zero-dependency
 - Keep functions small and named clearly
+
+## Local checks
+
+Run these before opening a PR:
+
+```bash
+npm run lint:md
+npm test
+```
 
 ## License
 

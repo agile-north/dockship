@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+set -eu
+
+printf "Running markdown lint...\n"
+npm run lint:md

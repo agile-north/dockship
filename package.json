@@ -16,7 +16,11 @@
     "all": "node ./cli.cjs all",
     "version": "node ./cli.cjs version",
     "tags": "node ./cli.cjs tags",
-    "test": "node --test"
+    "test": "node --test",
+    "lint:md": "npx markdownlint-cli2 \"**/*.md\"",
+    "hooks:install": "node ./scripts/install-hooks.cjs",
+    "prepare": "npm run hooks:install",
+    "validate": "npm run lint:md && npm test"
   },
   "files": [
     "cli.cjs",
