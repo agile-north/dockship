@@ -194,7 +194,58 @@ npx dock all
 
 # Show generated tags
 npx dock tags
+
+# Emit machine-readable envelope output
+npx dock version --json
+npx dock tags --output json
+npx dock all --json
 ```
+
+## JSON Output
+
+Dockship supports structured output for automation and CI pipelines.
+
+- `--json` is shorthand for `--output json`
+- `--output` supports `human` (default) and `json`
+
+In `json` mode:
+
+- stdout contains exactly one JSON object
+- stderr may contain diagnostic command output
+- exit codes follow command status semantics
+
+JSON contract reference:
+
+- `docs/output.md`
+
+Examples:
+
+```bash
+# Full envelope for version resolution
+npx dock version --json
+
+# Computed tags and fully-qualified references
+npx dock tags --output json
+
+# Build + push with step-level results
+npx dock all --json
+```
+
+Extract values:
+
+```bash
+# deployable image reference
+jq -r '.result.artifact.image.reference'
+
+# immutable artifact identifier
+jq -r '.result.artifact.id'
+```
+
+## Documentation
+
+Keep README focused on onboarding and common usage. Detailed feature contracts live under `docs/`.
+
+- `docs/output.md` - JSON output contract and status semantics
 
 ## Configuration: dockship.json
 

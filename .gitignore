@@ -24,3 +24,6 @@ desktop.ini
 dist/
 out/
 tmp/
+
+# Local scratch docs and brainstorming
+.scratch/
