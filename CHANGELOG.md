@@ -30,6 +30,14 @@ Legacy flat keys are still supported as compatibility aliases:
 * `docker.pushBranches` → `docker.push.branches`
 * `docker.tagLatest` → `docker.tags.latest`
 
+## [1.6.0](https://github.com/agile-north/dockship/compare/v1.5.0...v1.6.0) (2026-03-22)
+
+
+### Features
+
+* add JSON output contract and CLI envelope mode ([ba5222e](https://github.com/agile-north/dockship/commit/ba5222e46e4a1931f6aad70780656a868281e9df))
+* add JSON output contract and CLI envelope mode ([3648d1a](https://github.com/agile-north/dockship/commit/3648d1a7a537b3fdf9b8485bb70f8c4b0863f296))
+
 ## [1.5.0](https://github.com/agile-north/dockship/compare/v1.4.1...v1.5.0) (2026-03-22)
 
 
