@@ -95,6 +95,8 @@ jobs:
       - name: Check if version already exists on npm
         id: check
         shell: bash
+        env:
+          NODE_AUTH_TOKEN: ""
         run: |
           set +e
           npm view "${{ steps.pkg.outputs.name }}@${{ steps.mode.outputs.publish_version }}" version >/dev/null 2>&1
@@ -109,7 +111,21 @@ jobs:
             echo "Version not found on npm, publishing."
           fi
 
+      - name: Verify OIDC-only publish mode
+        if: steps.check.outputs.should_publish == 'true'
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ""
+        run: |
+          if [ -n "$NODE_AUTH_TOKEN" ]; then
+            echo "NODE_AUTH_TOKEN is unexpectedly set"
+            exit 1
+          fi
+          echo "NODE_AUTH_TOKEN is empty; proceeding with OIDC publish."
+
       - name: Publish package
         if: steps.check.outputs.should_publish == 'true'
         shell: bash
+        env:
+          NODE_AUTH_TOKEN: ""
         run: npm publish --access public --provenance --tag "${{ steps.mode.outputs.dist_tag }}"
