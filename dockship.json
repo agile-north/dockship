@@ -16,6 +16,9 @@
     "tags": {
       "latest": false
     },
+    "cleanup": {
+      "local": "auto"
+    },
     "platform": "",
     "buildArgs": {}
   },

@@ -35,6 +35,7 @@ const ENV_DOCKER_REPOSITORY = "DOCKER_TARGET_REPOSITORY";
 const ENV_DOCKER_PUSH_ENABLED = "DOCKER_PUSH_ENABLED";
 const ENV_DOCKER_PUSH_BRANCHES = "DOCKER_PUSH_BRANCHES";
 const ENV_DOCKER_TAG_LATEST = "DOCKER_TAG_LATEST";
+const ENV_DOCKER_CLEANUP_LOCAL = "DOCKER_CLEANUP_LOCAL";
 const ENV_DOCKER_CONTEXT = "DOCKER_CONTEXT";
 const ENV_DOCKERFILE_PATH = "DOCKERFILE_PATH";
 const ENV_DOCKER_PLATFORM = "DOCKER_PLATFORM";
@@ -54,11 +55,19 @@ const ENV_BRANCH_NAME = "BRANCH_NAME";
 const ENV_CI_COMMIT_REF_NAME = "CI_COMMIT_REF_NAME";
 const ENV_TEAMCITY_BUILD_BRANCH = "TEAMCITY_BUILD_BRANCH";
 const ENV_GIT_BRANCH = "GIT_BRANCH";
+const ENV_CI = "CI";
+const ENV_GITHUB_ACTIONS = "GITHUB_ACTIONS";
+const ENV_GITLAB_CI = "GITLAB_CI";
+const ENV_TF_BUILD = "TF_BUILD";
+const ENV_BUILDKITE = "BUILDKITE";
+const ENV_TEAMCITY_VERSION = "TEAMCITY_VERSION";
+const ENV_JENKINS_URL = "JENKINS_URL";
 
 // Defaults
 const DEFAULT_DOCKERFILE = "Dockerfile";
 const DEFAULT_CONTEXT = ".";
 const DEFAULT_PROGRESS = "plain";
+const DEFAULT_CLEANUP_LOCAL_MODE = "auto";
 const TEMP_DOCKER_CONFIG_PREFIX = "dockship-docker-config-";
 const EMPTY_STRING = "";
 const GIT_HEAD = "HEAD";
@@ -70,6 +79,8 @@ const DOCKER_CMD = "docker";
 const DOCKER_BUILD = "build";
 const DOCKER_LOGIN = "login";
 const DOCKER_PUSH = "push";
+const DOCKER_IMAGE = "image";
+const DOCKER_RM = "rm";
 const DOCKER_FLAG_TAG = "-t";
 const DOCKER_FLAG_FILE = "-f";
 const DOCKER_FLAG_PLATFORM = "--platform";
@@ -77,6 +88,11 @@ const DOCKER_FLAG_BUILD_ARG = "--build-arg";
 const DOCKER_FLAG_PROGRESS = "--progress";
 const DOCKER_FLAG_USERNAME = "--username";
 const DOCKER_FLAG_PASSWORD_STDIN = "--password-stdin";
+
+// Cleanup modes
+const CLEANUP_MODE_AUTO = "auto";
+const CLEANUP_MODE_TRUE = "true";
+const CLEANUP_MODE_FALSE = "false";
 
 // Git args
 const GIT_CMD = "git";
@@ -101,6 +117,9 @@ function getDefaultBuildConfig() {
       },
       tags: {
         latest: false
+      },
+      cleanup: {
+        local: DEFAULT_CLEANUP_LOCAL_MODE
       },
       platform: EMPTY_STRING,
       buildArgs: {}
@@ -219,6 +238,64 @@ function getStringArray(v, def = []) {
     .split(/[;,\r\n]+/)
     .map(item => item.trim())
     .filter(Boolean);
+}
+
+function normalizeTriStateBoolean(value, fallback = CLEANUP_MODE_AUTO) {
+  if (value === undefined || value === null || value === EMPTY_STRING) {
+    return fallback;
+  }
+
+  if (typeof value === "boolean") {
+    return value ? CLEANUP_MODE_TRUE : CLEANUP_MODE_FALSE;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) {
+    return CLEANUP_MODE_TRUE;
+  }
+
+  if (["0", "false", "no", "n", "off"].includes(normalized)) {
+    return CLEANUP_MODE_FALSE;
+  }
+
+  if (normalized === CLEANUP_MODE_AUTO) {
+    return CLEANUP_MODE_AUTO;
+  }
+
+  throw new Error(
+    `Unsupported cleanup.local value: ${value}. Supported values: ${CLEANUP_MODE_AUTO}, ${CLEANUP_MODE_TRUE}, ${CLEANUP_MODE_FALSE}`
+  );
+}
+
+function isCiEnvironment(env) {
+  const ciSignals = [
+    ENV_CI,
+    ENV_GITHUB_ACTIONS,
+    ENV_GITLAB_CI,
+    ENV_TF_BUILD,
+    ENV_BUILDKITE,
+    ENV_TEAMCITY_VERSION,
+    ENV_JENKINS_URL
+  ];
+
+  return ciSignals.some(key => {
+    const value = getString(env[key]);
+    return value && value.toLowerCase() !== CLEANUP_MODE_FALSE;
+  });
+}
+
+function resolveCleanupLocal(env, cleanupConfig) {
+  const mode = normalizeTriStateBoolean(
+    env[ENV_DOCKER_CLEANUP_LOCAL],
+    normalizeTriStateBoolean(cleanupConfig, DEFAULT_CLEANUP_LOCAL_MODE)
+  );
+
+  if (mode === CLEANUP_MODE_AUTO) {
+    return isCiEnvironment(env);
+  }
+
+  return mode === CLEANUP_MODE_TRUE;
 }
 
 function splitCommandArgs(value) {
@@ -418,6 +495,7 @@ function getDockerSettings(config, env, repoRoot, options = {}) {
   const login = docker.login || {};
   const push = docker.push || {};
   const tags = docker.tags || {};
+  const cleanup = docker.cleanup || {};
 
   const registry = getString(env[ENV_DOCKER_REGISTRY], getNestedValue(target.registry, docker.targetRegistry));
   const repo = getString(env[ENV_DOCKER_REPOSITORY], getNestedValue(target.repository, docker.targetRepository));
@@ -441,6 +519,7 @@ function getDockerSettings(config, env, repoRoot, options = {}) {
     pushBranches,
     currentBranch,
     latest: normalizeBool(env[ENV_DOCKER_TAG_LATEST], getNestedValue(tags.latest, docker.tagLatest)),
+    cleanupLocal: resolveCleanupLocal(env, getNestedValue(cleanup.local, DEFAULT_CLEANUP_LOCAL_MODE)),
     platform: getString(env[ENV_DOCKER_PLATFORM], docker.platform),
     buildArgFlags: resolveBuildArgs(env, docker),
   };
@@ -570,6 +649,18 @@ function dockerPush(repoRoot, version, settings, env) {
   });
 }
 
+function dockerCleanupLocalImages(repoRoot, version, settings, env) {
+  if (!settings.cleanupLocal) {
+    return;
+  }
+
+  const tags = getTags(version, settings);
+
+  tags.forEach(tag => {
+    exec(DOCKER_CMD, [DOCKER_IMAGE, DOCKER_RM, `${settings.image}:${tag}`], { cwd: repoRoot, env });
+  });
+}
+
 //
 // =======================
 // MAIN
@@ -612,6 +703,7 @@ ENVIRONMENT VARIABLES:
   DOCKER_PUSH_ENABLED         Enable/disable push (true/false)
   DOCKER_PUSH_BRANCHES        Branches that trigger push (comma-separated)
   DOCKER_TAG_LATEST           Tag image as 'latest' (true/false)
+  DOCKER_CLEANUP_LOCAL        Remove locally built image tags after build/all (auto/true/false)
   DOCKER_CONTEXT              Docker build context (default: .)
   DOCKERFILE_PATH             Path to Dockerfile (default: Dockerfile)
   DOCKER_PLATFORM             Target platform (e.g., linux/amd64)
@@ -661,7 +753,11 @@ function main() {
     case CMD_BUILD: {
       const docker = getDockerSettings(config, process.env, root, { requireImageTarget: true });
       withDockerAuth(root, process.env, docker, authEnv => {
-        dockerBuild(root, version, docker, authEnv);
+        try {
+          dockerBuild(root, version, docker, authEnv);
+        } finally {
+          dockerCleanupLocalImages(root, version, docker, authEnv);
+        }
       });
       break;
     }
@@ -678,8 +774,12 @@ function main() {
     case CMD_ALL: {
       const docker = getDockerSettings(config, process.env, root, { requireImageTarget: true });
       withDockerAuth(root, process.env, docker, authEnv => {
-        dockerBuild(root, version, docker, authEnv);
-        dockerPush(root, version, docker, authEnv);
+        try {
+          dockerBuild(root, version, docker, authEnv);
+          dockerPush(root, version, docker, authEnv);
+        } finally {
+          dockerCleanupLocalImages(root, version, docker, authEnv);
+        }
       });
       break;
     }

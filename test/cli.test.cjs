@@ -21,6 +21,7 @@ const CLI_ENV_KEYS = [
   "DOCKER_PUSH_ENABLED",
   "DOCKER_PUSH_BRANCHES",
   "DOCKER_TAG_LATEST",
+  "DOCKER_CLEANUP_LOCAL",
   "DOCKER_CONTEXT",
   "DOCKERFILE_PATH",
   "DOCKER_PLATFORM",
@@ -39,7 +40,14 @@ const CLI_ENV_KEYS = [
   "BRANCH_NAME",
   "CI_COMMIT_REF_NAME",
   "TEAMCITY_BUILD_BRANCH",
-  "GIT_BRANCH"
+  "GIT_BRANCH",
+  "CI",
+  "GITHUB_ACTIONS",
+  "GITLAB_CI",
+  "TF_BUILD",
+  "BUILDKITE",
+  "TEAMCITY_VERSION",
+  "JENKINS_URL"
 ];
 
 function seedNodeRepo(repoRoot, version = DEFAULT_VERSION) {
@@ -206,6 +214,185 @@ test("build command passes expected docker arguments", t => {
   ]);
 });
 
+test("build command removes local image tags when cleanup is enabled", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      },
+      tags: {
+        latest: true
+      },
+      cleanup: {
+        local: true
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, "build");
+
+  assert.equal(result.status, 0, result.stderr || "Expected cli build command to succeed");
+  assert.deepEqual(result.dockerCommands, [
+    [
+      "build",
+      "--progress",
+      "plain",
+      "-f",
+      "Dockerfile",
+      "--build-arg",
+      "APP_VERSION=1.2.3",
+      "-t",
+      "ghcr.io/acme/widget:1.2.3",
+      "-t",
+      "ghcr.io/acme/widget:1",
+      "-t",
+      "ghcr.io/acme/widget:1.2",
+      "-t",
+      "ghcr.io/acme/widget:latest",
+      "."
+    ],
+    ["image", "rm", "ghcr.io/acme/widget:1.2.3"],
+    ["image", "rm", "ghcr.io/acme/widget:1"],
+    ["image", "rm", "ghcr.io/acme/widget:1.2"],
+    ["image", "rm", "ghcr.io/acme/widget:latest"]
+  ]);
+});
+
+test("build command allows DOCKER_CLEANUP_LOCAL env var to enable cleanup", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, "build", {
+    env: {
+      DOCKER_CLEANUP_LOCAL: "true"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected cli build command to succeed");
+  assert.deepEqual(result.dockerCommands, [
+    [
+      "build",
+      "--progress",
+      "plain",
+      "-f",
+      "Dockerfile",
+      "--build-arg",
+      "APP_VERSION=1.2.3",
+      "-t",
+      "ghcr.io/acme/widget:1.2.3",
+      "-t",
+      "ghcr.io/acme/widget:1",
+      "-t",
+      "ghcr.io/acme/widget:1.2",
+      "."
+    ],
+    ["image", "rm", "ghcr.io/acme/widget:1.2.3"],
+    ["image", "rm", "ghcr.io/acme/widget:1"],
+    ["image", "rm", "ghcr.io/acme/widget:1.2"]
+  ]);
+});
+
+test("build command auto-cleans local image tags in CI by default", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, "build", {
+    env: {
+      CI: "true"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected cli build command to succeed");
+  assert.deepEqual(result.dockerCommands, [
+    [
+      "build",
+      "--progress",
+      "plain",
+      "-f",
+      "Dockerfile",
+      "--build-arg",
+      "APP_VERSION=1.2.3",
+      "-t",
+      "ghcr.io/acme/widget:1.2.3",
+      "-t",
+      "ghcr.io/acme/widget:1",
+      "-t",
+      "ghcr.io/acme/widget:1.2",
+      "."
+    ],
+    ["image", "rm", "ghcr.io/acme/widget:1.2.3"],
+    ["image", "rm", "ghcr.io/acme/widget:1"],
+    ["image", "rm", "ghcr.io/acme/widget:1.2"]
+  ]);
+});
+
+test("build command allows DOCKER_CLEANUP_LOCAL=false to disable CI auto cleanup", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, "build", {
+    env: {
+      CI: "true",
+      DOCKER_CLEANUP_LOCAL: "false"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected cli build command to succeed");
+  assert.deepEqual(result.dockerCommands, [
+    [
+      "build",
+      "--progress",
+      "plain",
+      "-f",
+      "Dockerfile",
+      "--build-arg",
+      "APP_VERSION=1.2.3",
+      "-t",
+      "ghcr.io/acme/widget:1.2.3",
+      "-t",
+      "ghcr.io/acme/widget:1",
+      "-t",
+      "ghcr.io/acme/widget:1.2",
+      "."
+    ]
+  ]);
+});
+
 test("push command skips docker pushes for disallowed branches", t => {
   const repoRoot = createTempRepo(t);
 
@@ -271,6 +458,58 @@ test("push command pushes all tags for allowed branches", t => {
     ["push", "ghcr.io/acme/widget:1"],
     ["push", "ghcr.io/acme/widget:1.2"],
     ["push", "ghcr.io/acme/widget:latest"]
+  ]);
+});
+
+test("all command removes local image tags after push or push skip when cleanup is enabled", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      },
+      push: {
+        enabled: true,
+        branches: ["main"]
+      },
+      cleanup: {
+        local: true
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, "all", {
+    env: {
+      GITHUB_REF_NAME: "feature/demo"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected cli all command to succeed");
+  assert.match(result.stdout, /Push skipped: branch 'feature\/demo' does not match \[main\]/);
+  assert.deepEqual(result.dockerCommands, [
+    [
+      "build",
+      "--progress",
+      "plain",
+      "-f",
+      "Dockerfile",
+      "--build-arg",
+      "APP_VERSION=1.2.3",
+      "-t",
+      "ghcr.io/acme/widget:1.2.3",
+      "-t",
+      "ghcr.io/acme/widget:1",
+      "-t",
+      "ghcr.io/acme/widget:1.2",
+      "."
+    ],
+    ["image", "rm", "ghcr.io/acme/widget:1.2.3"],
+    ["image", "rm", "ghcr.io/acme/widget:1"],
+    ["image", "rm", "ghcr.io/acme/widget:1.2"]
   ]);
 });
 

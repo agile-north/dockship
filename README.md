@@ -207,6 +207,7 @@ The config file is optional. If `.dockship/dockship.json` is missing, dockship u
 - `docker.push.enabled = false`
 - `docker.push.branches = []`
 - `docker.tags.latest = false`
+- `docker.cleanup.local = "auto"`
 
 For `dock build`, `dock ship`, and `dock all`, image target settings still need to come from config or env:
 
@@ -239,6 +240,9 @@ Configuration precedence is:
     "tags": {
       "latest": false                       // Add 'latest' tag
     },
+    "cleanup": {
+      "local": "auto"                    // Auto: clean in CI, keep locally for dev
+    },
     "platform": "linux/amd64",            // Optional: build platform
     "buildArgs": { "ENV": "prod" }        // Optional: extra docker build args
   }
@@ -257,6 +261,7 @@ Configuration precedence is:
 | `docker.push.enabled` | boolean | `false` | `DOCKER_PUSH_ENABLED` | Enables pushing for `dock ship` and `dock all` |
 | `docker.push.branches` | string[] | `[]` | `DOCKER_PUSH_BRANCHES` | Branch allow-list; supports `*` wildcards |
 | `docker.tags.latest` | boolean | `false` | `DOCKER_TAG_LATEST` | Adds the `latest` tag in addition to semantic tags |
+| `docker.cleanup.local` | `auto` \| boolean | `auto` | `DOCKER_CLEANUP_LOCAL` | `auto` cleans up in CI and keeps images locally for dev. `true` always removes built tags after `dock build`/`dock all`; `false` never removes them. |
 | `docker.platform` | string | empty | `DOCKER_PLATFORM` | Passed to `docker build --platform` |
 | `docker.buildArgs` | object | `{}` | `DOCKER_BUILD_ARGS` | Key/value pairs passed as `--build-arg KEY=value`; appended before the auto-generated `APP_VERSION` build arg. Env var accepts JSON (`{"K":"v"}`) or semicolon-delimited `KEY=value;KEY2=value2` |
 
@@ -305,6 +310,7 @@ Environment variable overrides (CI):
 - `DOCKER_PUSH_ENABLED`
 - `DOCKER_PUSH_BRANCHES`
 - `DOCKER_TAG_LATEST`
+- `DOCKER_CLEANUP_LOCAL`
 - `DOCKER_LOGIN_USERNAME`
 - `DOCKER_LOGIN_PASSWORD`
 - `DOCKER_LOGIN_REGISTRY`
@@ -707,6 +713,37 @@ npx dock build
 }
 ```
 
+### CI Build Without Retaining Local Images
+
+Useful on self-hosted runners or long-lived agents that should build for validation but not accumulate Docker images locally:
+
+```json
+{
+  "docker": {
+    "target": {
+      "registry": "ghcr.io",
+      "repository": "my-org/my-app"
+    },
+    "push": {
+      "enabled": false
+    },
+    "cleanup": {
+      "local": true
+    }
+  }
+}
+```
+
+Or configure it by env var in CI:
+
+```bash
+DOCKER_PUSH_ENABLED=false
+DOCKER_CLEANUP_LOCAL=auto
+npx dock build
+```
+
+`DOCKER_CLEANUP_LOCAL` accepts `auto`, `true`, or `false`.
+
 ### Monorepo Services
 
 ```json
@@ -809,6 +846,7 @@ Version from Node.js:
 - `DOCKER_PUSH_ENABLED` – "true"/"false", override `docker.push.enabled`
 - `DOCKER_PUSH_BRANCHES` – comma/semicolon/newline separated branch patterns, supports `*`
 - `DOCKER_TAG_LATEST` – "true"/"false", override `docker.tags.latest`
+- `DOCKER_CLEANUP_LOCAL` – `auto`/`true`/`false`, remove locally built tags after `dock build` and `dock all`
 - `DOCKER_PLATFORM` – override `docker.platform`
 - `DOCKER_BUILD_ARGS` – build args as JSON (`{"ENV":"prod"}`) or semicolon-delimited `KEY=value;KEY2=value2`; overrides `docker.buildArgs`
 - `NPM_TOKEN` – for private npm (if using @agile-north providers)
