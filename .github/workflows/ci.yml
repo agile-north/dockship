@@ -35,6 +35,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Run tests
+        run: npm test
+
       - name: Lint Markdown
         uses: DavidAnson/markdownlint-cli2-action@v22
         with:

@@ -15,7 +15,8 @@
     "ship": "node ./cli.cjs push",
     "all": "node ./cli.cjs all",
     "version": "node ./cli.cjs version",
-    "tags": "node ./cli.cjs tags"
+    "tags": "node ./cli.cjs tags",
+    "test": "node --test"
   },
   "files": [
     "cli.cjs",

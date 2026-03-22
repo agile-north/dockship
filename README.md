@@ -85,8 +85,14 @@ Allowed publish routes (enforced):
 CI validation:
 
 - `.github/workflows/ci.yml` runs on PRs and pushes to `main`, `develop`, and `feature/**`
-- It validates installability and npm package metadata using dry-run checks
+- It runs `npm test` and validates installability and npm package metadata using dry-run checks
 - Configure branch protection on `main` and require status checks **CI / validate** and **PR Title / conventional-pr-title** before merge
+
+Local validation:
+
+```bash
+npm test
+```
 
 Authentication options:
 
