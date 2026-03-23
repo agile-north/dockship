@@ -496,6 +496,8 @@ test("build command passes expected docker arguments", t => {
         latest: true
       },
       platform: "linux/amd64",
+      buildTarget: "export-stage",
+      buildOutput: "type=local,dest=./out",
       buildArgs: {
         SHOULD_NOT: "win"
       }
@@ -518,6 +520,10 @@ test("build command passes expected docker arguments", t => {
     "Dockerfile",
     "--platform",
     "linux/amd64",
+    "--target",
+    "export-stage",
+    "--output",
+    "type=local,dest=./out",
     "--build-arg",
     "FROM_ENV=yes",
     "--build-arg",
@@ -533,6 +539,132 @@ test("build command passes expected docker arguments", t => {
     "."
   ]);
 });
+
+test("stage command executes configured stage target and output", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      },
+      tags: {
+        latest: true
+      },
+      stages: {
+        validate: {
+          target: "validate",
+          output: "type=local,dest=./stage-validate"
+        }
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["stage", "validate"], {
+    env: {
+      DOCKER_TARGET_REGISTRY: "ghcr.io",
+      DOCKER_TARGET_REPOSITORY: "acme/widget"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected stage command to succeed");
+  assert.equal(result.dockerCommands[0][0], "build");
+  assert.ok(result.dockerCommands[0].includes("--target"));
+  assert.ok(result.dockerCommands[0].includes("validate"));
+  assert.ok(result.dockerCommands[0].includes("--output"));
+
+});
+
+test("stage all runs configured stages sequentially", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      },
+      tags: {
+        latest: true
+      },
+      stages: {
+        validate: { target: "validate", output: "type=local,dest=./stage-validate" },
+        test: { target: "test", output: "type=local,dest=./stage-test" }
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["stage", "all"], {
+    env: {
+      DOCKER_TARGET_REGISTRY: "ghcr.io",
+      DOCKER_TARGET_REPOSITORY: "acme/widget"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected stage all to succeed");
+  assert.equal(result.dockerCommands.length, 2);
+  assert.equal(result.dockerCommands[0][result.dockerCommands[0].indexOf("--target") + 1], "validate");
+  assert.equal(result.dockerCommands[1][result.dockerCommands[1].indexOf("--target") + 1], "test");
+});
+
+test("stage all with no stages configured falls back to one build", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      },
+      tags: {
+        latest: true
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["stage", "all"], {
+    env: {
+      DOCKER_TARGET_REGISTRY: "ghcr.io",
+      DOCKER_TARGET_REPOSITORY: "acme/widget"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected stage all fallback to succeed");
+  assert.equal(result.dockerCommands.length, 1);
+});
+
+
+test("stage all reads stage definitions from DOCKER_STAGES env", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  const envStages = JSON.stringify({
+    validate: { target: "validate", output: "type=local,dest=./stage-validate" },
+    test: { target: "test", output: "type=local,dest=./stage-test" }
+  });
+
+  const result = runCliMain(repoRoot, ["stage", "all"], {
+    env: {
+      DOCKER_TARGET_REGISTRY: "ghcr.io",
+      DOCKER_TARGET_REPOSITORY: "acme/widget",
+      DOCKER_STAGES: envStages
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected stage all env-based stage config to succeed");
+  assert.equal(result.dockerCommands.length, 2);
+  assert.equal(result.dockerCommands[0][result.dockerCommands[0].indexOf("--target") + 1], "validate");
+  assert.equal(result.dockerCommands[1][result.dockerCommands[1].indexOf("--target") + 1], "test");
+});
+
 
 test("build command uses docker buildx when runner is configured", t => {
   const repoRoot = createTempRepo(t);

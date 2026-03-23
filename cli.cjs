@@ -15,6 +15,7 @@ const cp = require("child_process");
 const CMD_BUILD = "build";
 const CMD_PUSH = "push";
 const CMD_SHIP = "ship";
+const CMD_STAGE = "stage";
 const CMD_ALL = "all";
 const CMD_VERSION = "version";
 const CMD_TAGS = "tags";
@@ -63,7 +64,10 @@ const ENV_DOCKER_CONTEXT = "DOCKER_CONTEXT";
 const ENV_DOCKERFILE_PATH = "DOCKERFILE_PATH";
 const ENV_DOCKER_PLATFORM = "DOCKER_PLATFORM";
 const ENV_DOCKER_BUILD_ARGS = "DOCKER_BUILD_ARGS";
+const ENV_DOCKER_BUILD_TARGET = "DOCKER_BUILD_TARGET";
+const ENV_DOCKER_BUILD_OUTPUT = "DOCKER_BUILD_OUTPUT";
 const ENV_DOCKER_RUNNER = "DOCKER_RUNNER";
+const ENV_DOCKER_STAGES = "DOCKER_STAGES";
 const ENV_DOCKER_LOGIN_USERNAME = "DOCKER_LOGIN_USERNAME";
 const ENV_DOCKER_LOGIN_PASSWORD = "DOCKER_LOGIN_PASSWORD";
 const ENV_DOCKER_LOGIN_REGISTRY = "DOCKER_LOGIN_REGISTRY";
@@ -163,6 +167,8 @@ function getDefaultBuildConfig() {
       },
       runner: DEFAULT_DOCKER_RUNNER,
       platform: EMPTY_STRING,
+      buildTarget: EMPTY_STRING,
+      buildOutput: EMPTY_STRING,
       buildArgs: {}
     }
   };
@@ -420,6 +426,7 @@ function hasJsonOutputFlag(argv) {
 function parseCliArgs(argv) {
   const args = Array.isArray(argv) ? argv : [];
   let command = EMPTY_STRING;
+  let commandArg = EMPTY_STRING;
   let outputMode = OUTPUT_MODE_HUMAN;
 
   for (let i = 0; i < args.length; i += 1) {
@@ -467,11 +474,17 @@ function parseCliArgs(argv) {
       continue;
     }
 
+    if (!commandArg) {
+      commandArg = token.toLowerCase();
+      continue;
+    }
+
     throw new Error(`Unexpected argument: ${token}`);
   }
 
   return {
     command: command || CMD_BUILD,
+    commandArg,
     outputMode
   };
 }
@@ -497,6 +510,26 @@ function parseBuildArgsEnv(value) {
 
     return p ? [DOCKER_FLAG_BUILD_ARG, p] : [];
   });
+}
+
+function resolveBuildOutput(env, docker) {
+  const envValue = getString(env[ENV_DOCKER_BUILD_OUTPUT]);
+
+  if (envValue) {
+    return splitCommandArgs(envValue);
+  }
+
+  const configValue = docker.buildOutput;
+
+  if (Array.isArray(configValue)) {
+    return configValue.flatMap(item => splitCommandArgs(String(item)));
+  }
+
+  if (typeof configValue === "string" && configValue.trim()) {
+    return splitCommandArgs(configValue);
+  }
+
+  return [];
 }
 
 function resolveBuildArgs(env, docker) {
@@ -783,7 +816,247 @@ function getDockerSettings(config, env, repoRoot, options = {}) {
     cleanupLocal: resolveCleanupLocal(env, getNestedValue(cleanup.local, DEFAULT_CLEANUP_LOCAL_MODE)),
     runner: normalizeDockerRunner(env[ENV_DOCKER_RUNNER], normalizeDockerRunner(docker.runner, DEFAULT_DOCKER_RUNNER)),
     platform: getString(env[ENV_DOCKER_PLATFORM], docker.platform),
+    buildTarget: getString(env[ENV_DOCKER_BUILD_TARGET], docker.buildTarget || ""),
+    buildOutputFlags: resolveBuildOutput(env, docker),
     buildArgFlags: resolveBuildArgs(env, docker),
+  };
+}
+
+function parseStageDefinitionsEnv(env) {
+  const value = getString(env[ENV_DOCKER_STAGES]);
+
+  if (!value) {
+    return null;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch (err) {
+    throw new Error(`${ENV_DOCKER_STAGES} must be valid JSON: ${err.message}`);
+  }
+
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error(`${ENV_DOCKER_STAGES} must be a JSON object mapping stage names to configs`);
+  }
+
+  if (Array.isArray(parsed)) {
+    // Optionally support array-of-stage objects with name field
+    const stageMap = {};
+
+    parsed.forEach(item => {
+      if (item && typeof item === "object" && item.name) {
+        stageMap[String(item.name).toLowerCase()] = item;
+      }
+    });
+
+    return stageMap;
+  }
+
+  const result = {};
+
+  Object.keys(parsed).forEach(k => {
+    if (k) {
+      result[k.toLowerCase()] = parsed[k];
+    }
+  });
+
+  return result;
+}
+
+function getStageNames(config, env) {
+  const envStages = parseStageDefinitionsEnv(env);
+
+  if (envStages && Object.keys(envStages).length > 0) {
+    return Object.keys(envStages);
+  }
+
+  const stages = config && config.docker && config.docker.stages;
+
+  if (!stages) {
+    return [];
+  }
+
+  if (Array.isArray(stages)) {
+    return stages.map(stage => getString(stage)).filter(Boolean);
+  }
+
+  return Object.keys(stages).filter(Boolean);
+}
+
+function getStageDefinition(config, env, stageName) {
+  if (!stageName) {
+    return null;
+  }
+
+  const envStages = parseStageDefinitionsEnv(env);
+
+  if (envStages) {
+    const normalizedName = stageName.toLowerCase();
+
+    if (envStages[normalizedName]) {
+      return envStages[normalizedName];
+    }
+
+    const exactKey = Object.keys(envStages).find(k => k.toLowerCase() === normalizedName);
+    if (exactKey) {
+      return envStages[exactKey];
+    }
+  }
+
+  if (!config || !config.docker || !config.docker.stages) {
+    return null;
+  }
+
+  const stages = config.docker.stages;
+
+  if (Array.isArray(stages)) {
+    const match = stages.find(stage => stage && getString(stage.name).toLowerCase() === stageName.toLowerCase());
+    return match || null;
+  }
+
+  if (stages[stageName]) {
+    return stages[stageName];
+  }
+
+  const stageLower = stageName.toLowerCase();
+
+  if (stages[stageLower]) {
+    return stages[stageLower];
+  }
+
+  const key = Object.keys(stages).find(k => String(k).toLowerCase() === stageLower);
+
+  return key ? stages[key] : null;
+}
+
+function resolveSettingsForStage(config, env, repoRoot, stageName) {
+  const settings = getDockerSettings(config, env, repoRoot, { requireImageTarget: true });
+  const stage = getStageDefinition(config, env, stageName);
+
+  if (!stage) {
+    throw new Error(`Undefined stage: ${stageName}`);
+  }
+
+  if (stage.target) {
+    settings.buildTarget = getString(stage.target);
+  }
+
+  if (stage.buildTarget) {
+    settings.buildTarget = getString(stage.buildTarget);
+  }
+
+  if (stage.output) {
+    settings.buildOutputFlags = splitCommandArgs(stage.output);
+  }
+
+  if (stage.buildOutput) {
+    settings.buildOutputFlags = splitCommandArgs(stage.buildOutput);
+  }
+
+  if (stage.runner) {
+    settings.runner = normalizeDockerRunner(stage.runner, settings.runner);
+  }
+
+  return settings;
+}
+
+function runStage(repoRoot, version, config, env, stageName, outputMode) {
+  const settings = resolveSettingsForStage(config, env, repoRoot, stageName);
+  let removedReferences = [];
+
+  withDockerAuth(repoRoot, env, settings, authEnv => {
+    try {
+      dockerBuild(repoRoot, version, settings, authEnv, outputMode);
+    } finally {
+      removedReferences = dockerCleanupLocalImages(repoRoot, version, settings, authEnv, outputMode);
+    }
+  });
+
+  return {
+    status: STATUS_SUCCESS,
+    result: {
+      artifact: buildArtifact(version, settings),
+      operation: {
+        type: CMD_STAGE,
+        stage: stageName,
+        performed: true,
+        cleanup: {
+          enabled: settings.cleanupLocal,
+          removedReferences
+        }
+      },
+      metadata: buildMetadata(settings)
+    },
+    warnings: [],
+    errors: []
+  };
+}
+
+function runStageAll(repoRoot, version, config, env, outputMode) {
+  const stageNames = getStageNames(config, env);
+  const results = [];
+
+  if (!stageNames.length) {
+    const settings = getDockerSettings(config, env, repoRoot, { requireImageTarget: true });
+    let removedReferences = [];
+
+    withDockerAuth(repoRoot, env, settings, authEnv => {
+      try {
+        dockerBuild(repoRoot, version, settings, authEnv, outputMode);
+      } finally {
+        removedReferences = dockerCleanupLocalImages(repoRoot, version, settings, authEnv, outputMode);
+      }
+    });
+
+    const result = {
+      status: STATUS_SUCCESS,
+      result: {
+        artifact: buildArtifact(version, settings),
+        steps: {
+          build: {
+            artifact: buildArtifact(version, settings),
+            operation: {
+              type: CMD_BUILD,
+              performed: true,
+              cleanup: {
+                enabled: settings.cleanupLocal,
+                removedReferences
+              }
+            },
+            metadata: buildMetadata(settings)
+          }
+        }
+      },
+      warnings: [],
+      errors: []
+    };
+
+    return result;
+  }
+
+  let overallStatus = STATUS_SUCCESS;
+  let lastArtifact = null;
+
+  stageNames.forEach(stageName => {
+    const stageResult = runStage(repoRoot, version, config, env, stageName, outputMode);
+    results.push({ stage: stageName, result: stageResult.result });
+
+    lastArtifact = stageResult.result.artifact;
+
+    if (stageResult.status === STATUS_FAILED) {
+      overallStatus = STATUS_FAILED;
+    }
+  });
+
+  return {
+    status: overallStatus,
+    result: {
+      artifact: lastArtifact,
+      stages: results
+    },
+    warnings: [],
+    errors: []
   };
 }
 
@@ -901,6 +1174,14 @@ function dockerBuild(repoRoot, version, settings, env, outputMode = OUTPUT_MODE_
 
   if (settings.platform) {
     args.push(DOCKER_FLAG_PLATFORM, settings.platform);
+  }
+
+  if (settings.buildTarget) {
+    args.push("--target", settings.buildTarget);
+  }
+
+  if (settings.buildOutputFlags && settings.buildOutputFlags.length) {
+    args.push("--output", ...settings.buildOutputFlags);
   }
 
   args.push(...settings.buildArgFlags);
@@ -1177,7 +1458,7 @@ function executePushDetailed(repoRoot, version, settings, env, commandType, outp
   };
 }
 
-function executeJsonCommand(command, root, config, version, env) {
+function executeJsonCommand(command, commandArg, root, config, version, env) {
   const warnings = [];
   const errors = [];
 
@@ -1234,6 +1515,22 @@ function executeJsonCommand(command, root, config, version, env) {
         warnings,
         errors
       };
+    }
+
+    case CMD_STAGE: {
+      if (!commandArg) {
+        throw new Error("stage command requires a stage name");
+      }
+
+      if (commandArg === CMD_ALL) {
+        return runStageAll(root, version, config, env, OUTPUT_MODE_JSON);
+      }
+
+      if (!getStageDefinition(config, env, commandArg)) {
+        throw new Error(`Unknown stage: ${commandArg}`);
+      }
+
+      return runStage(root, version, config, env, commandArg, OUTPUT_MODE_JSON);
     }
 
     case CMD_PUSH:
@@ -1355,6 +1652,8 @@ USAGE:
 
 COMMANDS:
   build          Build Docker image(s) with version tags (default)
+  stage <name>   Build a named stage using docker --target + --output
+  stage all      Run configured stages sequentially (definition in dockship.json)
   ship, push     Push existing image tags to registry
   all            Build image(s), then push them to registry
   version        Output resolved version information as JSON
@@ -1363,6 +1662,8 @@ COMMANDS:
 
 EXAMPLES:
   dock build              # Build image with automatic version detection
+  dock stage validate     # Build Dockerfile stage named validate
+  dock stage all          # Run all configured stages sequentially
   dock ship               # Push image to configured registry
   dock all                # Build and push in one command
   dock version            # Display resolved version info
@@ -1465,7 +1766,7 @@ function main() {
 
   if (outputMode === OUTPUT_MODE_JSON) {
     try {
-      const executed = executeJsonCommand(cmd, root, config, version, process.env);
+      const executed = executeJsonCommand(cmd, parsed.commandArg, root, config, version, process.env);
       const envelope = createEnvelope(
         cmd,
         OUTPUT_MODE_JSON,
@@ -1540,6 +1841,29 @@ function main() {
           dockerCleanupLocalImages(root, version, docker, authEnv, OUTPUT_MODE_HUMAN);
         }
       });
+      break;
+    }
+
+    case CMD_STAGE: {
+      if (!parsed.commandArg) {
+        throw new Error("stage command requires a stage name");
+      }
+
+      if (parsed.commandArg === CMD_ALL) {
+        const stageResult = runStageAll(root, version, config, process.env, OUTPUT_MODE_HUMAN);
+
+        if (stageResult.status === STATUS_FAILED) {
+          process.exitCode = EXIT_FAILED;
+        }
+
+        break;
+      }
+
+      if (!getStageDefinition(config, process.env, parsed.commandArg)) {
+        throw new Error(`Unknown stage: ${parsed.commandArg}`);
+      }
+
+      runStage(root, version, config, process.env, parsed.commandArg, OUTPUT_MODE_HUMAN);
       break;
     }
 
