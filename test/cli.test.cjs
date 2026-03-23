@@ -714,6 +714,53 @@ test("stage all reads stage definitions from DOCKER_STAGES env", t => {
 });
 
 
+test("all --json with stages runs push before local cleanup", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      stages: {
+        "test-results": {
+          target: "validated",
+          output: "type=local,dest=TestResults"
+        }
+      },
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      },
+      push: {
+        branches: ["release/*", "deploy/*"]
+      },
+      cleanup: {
+        local: true
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["all", "--json"], {
+    env: {
+      DOCKER_TARGET_REGISTRY: "ghcr.io",
+      DOCKER_TARGET_REPOSITORY: "acme/widget",
+      DOCKER_PUSH_ENABLED: "true",
+      GITHUB_REF_NAME: "release/1.0"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected all --json to succeed");
+
+  const commands = result.dockerCommands.map(args => args.join(" "));
+  const firstPushIndex = commands.findIndex(c => c.startsWith("push "));
+  const firstRmIndex = commands.findIndex(c => c.startsWith("image rm "));
+
+  assert.ok(firstPushIndex !== -1, "No push command executed");
+  assert.ok(firstRmIndex !== -1, "No cleanup image rm command executed");
+  assert.ok(firstPushIndex < firstRmIndex, "Cleanup should happen after push");
+});
+
+
 test("build command uses docker buildx when runner is configured", t => {
   const repoRoot = createTempRepo(t);
 
