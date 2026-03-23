@@ -602,7 +602,8 @@ function exec(command, args, options = {}) {
   const result = runCommand(command, args, options);
 
   if (!result.ok) {
-    throw new Error(`${command} failed`);
+    const details = [result.stderr, result.stdout].filter(Boolean).join(" | ");
+    throw new Error(`${command} failed${details ? `: ${details}` : ""}`);
   }
 
   return result;
@@ -1285,8 +1286,21 @@ function dockerCleanupLocalImages(repoRoot, version, settings, env, outputMode =
 
   tags.forEach(tag => {
     const reference = `${settings.image}:${tag}`;
-    exec(DOCKER_CMD, [DOCKER_IMAGE, DOCKER_RM, reference], { cwd: repoRoot, env, outputMode });
-    removed.push(reference);
+
+    try {
+      exec(DOCKER_CMD, [DOCKER_IMAGE, DOCKER_RM, reference], { cwd: repoRoot, env, outputMode });
+      removed.push(reference);
+    } catch (err) {
+      const errMessage = err && err.message ? err.message : "";
+
+      // Docker may already have cleaned the image for this tag; ignore missing-image errors.
+      if (/No such image/i.test(errMessage) || /not found/i.test(errMessage)) {
+        return;
+      }
+
+      // Preserve non-cleanup failures.
+      throw err;
+    }
   });
 
   return removed;

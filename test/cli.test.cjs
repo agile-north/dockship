@@ -481,6 +481,52 @@ test("build --json reports cleanup removed references when enabled", t => {
   assert.ok(payload.result.operation.cleanup.removedReferences.includes("ghcr.io/acme/widget:1.2.3"));
 });
 
+test("build --json cleanup ignores no such image errors on repeated removal", t => {
+  const repoRoot = createTempRepo(t);
+
+  writeJson(path.join(repoRoot, "package.json"), {
+    name: SAMPLE_PACKAGE_NAME,
+    version: "1.0.11.39659"
+  });
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      },
+      tags: {
+        latest: false
+      },
+      cleanup: {
+        local: true
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["build", "--json"], {
+    env: {
+      DOCKER_TARGET_REGISTRY: "ghcr.io",
+      DOCKER_TARGET_REPOSITORY: "acme/widget"
+    },
+    dockerResultFactory: args => {
+      if (args[0] === "image" && args[1] === "rm" && args[2] === "ghcr.io/acme/widget:1.0.11.39659") {
+        return { status: 1, stdout: "", stderr: "Error response from daemon: No such image: ghcr.io/acme/widget:1.0.11.39659" };
+      }
+
+      return { status: 0, stdout: "", stderr: "" };
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected build --json to succeed even if one cleanup tag is already gone");
+  const payload = JSON.parse(result.stdout);
+
+  assert.equal(payload.status, "success");
+  assert.equal(payload.result.operation.cleanup.enabled, true);
+  assert.ok(payload.result.operation.cleanup.removedReferences.includes("ghcr.io/acme/widget:1"));
+  assert.ok(payload.result.operation.cleanup.removedReferences.includes("ghcr.io/acme/widget:1.0"));
+});
+
 test("build command passes expected docker arguments", t => {
   const repoRoot = createTempRepo(t);
 
