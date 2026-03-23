@@ -344,6 +344,16 @@ DOCKER_BUILD_ARGS='--target export-stage;--output=type=local,dest=./out' \
 npx dock build
 ```
 
+To export files or artifacts from intermediate Dockerfile stages, set the runner to `buildx` (or `auto`) and pass `--target` and `--output` via `DOCKER_BUILD_ARGS`.
+
+Example:
+
+```bash
+DOCKER_RUNNER=buildx \
+DOCKER_BUILD_ARGS='--target export-stage;--output=type=local,dest=./out' \
+npx dock build
+```
+
 Optional registry login environment variables:
 
 - `DOCKER_LOGIN_USERNAME`
