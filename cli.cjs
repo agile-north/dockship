@@ -63,6 +63,7 @@ const ENV_DOCKER_CONTEXT = "DOCKER_CONTEXT";
 const ENV_DOCKERFILE_PATH = "DOCKERFILE_PATH";
 const ENV_DOCKER_PLATFORM = "DOCKER_PLATFORM";
 const ENV_DOCKER_BUILD_ARGS = "DOCKER_BUILD_ARGS";
+const ENV_DOCKER_RUNNER = "DOCKER_RUNNER";
 const ENV_DOCKER_LOGIN_USERNAME = "DOCKER_LOGIN_USERNAME";
 const ENV_DOCKER_LOGIN_PASSWORD = "DOCKER_LOGIN_PASSWORD";
 const ENV_DOCKER_LOGIN_REGISTRY = "DOCKER_LOGIN_REGISTRY";
@@ -91,6 +92,7 @@ const DEFAULT_DOCKERFILE = "Dockerfile";
 const DEFAULT_CONTEXT = ".";
 const DEFAULT_PROGRESS = "plain";
 const DEFAULT_CLEANUP_LOCAL_MODE = "auto";
+const DEFAULT_DOCKER_RUNNER = "build";
 const TEMP_DOCKER_CONFIG_PREFIX = "dockship-docker-config-";
 const EMPTY_STRING = "";
 const GIT_HEAD = "HEAD";
@@ -100,6 +102,7 @@ const GIT_REMOTES_ORIGIN_PREFIX = "origin/";
 // Docker args
 const DOCKER_CMD = "docker";
 const DOCKER_BUILD = "build";
+const DOCKER_BUILDX = "buildx";
 const DOCKER_LOGIN = "login";
 const DOCKER_PUSH = "push";
 const DOCKER_IMAGE = "image";
@@ -111,6 +114,10 @@ const DOCKER_FLAG_BUILD_ARG = "--build-arg";
 const DOCKER_FLAG_PROGRESS = "--progress";
 const DOCKER_FLAG_USERNAME = "--username";
 const DOCKER_FLAG_PASSWORD_STDIN = "--password-stdin";
+const DOCKER_VERSION = "version";
+const DOCKER_RUNNER_BUILD = "build";
+const DOCKER_RUNNER_BUILDX = "buildx";
+const DOCKER_RUNNER_AUTO = "auto";
 
 // Cleanup modes
 const CLEANUP_MODE_AUTO = "auto";
@@ -154,6 +161,7 @@ function getDefaultBuildConfig() {
       cleanup: {
         local: DEFAULT_CLEANUP_LOCAL_MODE
       },
+      runner: DEFAULT_DOCKER_RUNNER,
       platform: EMPTY_STRING,
       buildArgs: {}
     }
@@ -329,6 +337,26 @@ function resolveCleanupLocal(env, cleanupConfig) {
   }
 
   return mode === CLEANUP_MODE_TRUE;
+}
+
+function normalizeDockerRunner(value, fallback = DEFAULT_DOCKER_RUNNER) {
+  if (value === undefined || value === null || value === EMPTY_STRING) {
+    return fallback;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+
+  if (
+    normalized === DOCKER_RUNNER_BUILD ||
+    normalized === DOCKER_RUNNER_BUILDX ||
+    normalized === DOCKER_RUNNER_AUTO
+  ) {
+    return normalized;
+  }
+
+  throw new Error(
+    `Unsupported docker runner: ${value}. Supported values: ${DOCKER_RUNNER_BUILD}, ${DOCKER_RUNNER_BUILDX}, ${DOCKER_RUNNER_AUTO}`
+  );
 }
 
 function splitCommandArgs(value) {
@@ -753,6 +781,7 @@ function getDockerSettings(config, env, repoRoot, options = {}) {
     inputBranch: branchInfo.inputBranch,
     latest: normalizeBool(env[ENV_DOCKER_TAG_LATEST], getNestedValue(tags.latest, docker.tagLatest)),
     cleanupLocal: resolveCleanupLocal(env, getNestedValue(cleanup.local, DEFAULT_CLEANUP_LOCAL_MODE)),
+    runner: normalizeDockerRunner(env[ENV_DOCKER_RUNNER], normalizeDockerRunner(docker.runner, DEFAULT_DOCKER_RUNNER)),
     platform: getString(env[ENV_DOCKER_PLATFORM], docker.platform),
     buildArgFlags: resolveBuildArgs(env, docker),
   };
@@ -829,11 +858,41 @@ function withDockerAuth(repoRoot, env, settings, action) {
   }
 }
 
+function dockerBuildxAvailable(repoRoot, env) {
+  const result = cp.spawnSync(DOCKER_CMD, [DOCKER_BUILDX, DOCKER_VERSION], {
+    cwd: repoRoot,
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf8"
+  });
+
+  return result.status === 0;
+}
+
+function resolveDockerBuildRunner(repoRoot, settings, env) {
+  const configuredRunner = settings.runner;
+
+  if (configuredRunner !== DOCKER_RUNNER_AUTO) {
+    return configuredRunner;
+  }
+
+  if (dockerBuildxAvailable(repoRoot, env)) {
+    return DOCKER_RUNNER_BUILDX;
+  }
+
+  return DOCKER_RUNNER_BUILD;
+}
+
 function dockerBuild(repoRoot, version, settings, env, outputMode = OUTPUT_MODE_HUMAN) {
   const tags = getTags(version, settings);
+  const resolvedRunner = resolveDockerBuildRunner(repoRoot, settings, env);
+  settings.resolvedRunner = resolvedRunner;
+  const buildRunnerArgs = resolvedRunner === DOCKER_RUNNER_BUILDX
+    ? [DOCKER_BUILDX, DOCKER_BUILD]
+    : [DOCKER_BUILD];
 
   const args = [
-    DOCKER_BUILD,
+    ...buildRunnerArgs,
     DOCKER_FLAG_PROGRESS,
     DEFAULT_PROGRESS,
     DOCKER_FLAG_FILE,
@@ -975,9 +1034,11 @@ function buildArtifact(version, settings, digestValue = NULL_VALUE) {
 
 function buildMetadata(settings) {
   const platform = getString(settings.platform);
+  const runner = getString(settings.resolvedRunner || settings.runner, DEFAULT_DOCKER_RUNNER);
 
   return {
-    platforms: platform ? [platform] : []
+    platforms: platform ? [platform] : [],
+    runner
   };
 }
 
@@ -1326,6 +1387,7 @@ ENVIRONMENT VARIABLES:
   DOCKER_CLEANUP_LOCAL        Remove locally built image tags after build/all (auto/true/false)
   DOCKER_CONTEXT              Docker build context (default: .)
   DOCKERFILE_PATH             Path to Dockerfile (default: Dockerfile)
+  DOCKER_RUNNER               Docker runner: build, buildx, or auto (default: build)
   DOCKER_PLATFORM             Target platform (e.g., linux/amd64)
   DOCKER_BUILD_ARGS           Build args as KEY=value pairs
   DOCKER_LOGIN_USERNAME       Optional registry login username
