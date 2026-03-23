@@ -30,6 +30,14 @@ Legacy flat keys are still supported as compatibility aliases:
 * `docker.pushBranches` → `docker.push.branches`
 * `docker.tagLatest` → `docker.tags.latest`
 
+## [1.9.0](https://github.com/agile-north/dockship/compare/v1.8.0...v1.9.0) (2026-03-23)
+
+
+### Features
+
+* add target alias for stage and stage-all fallback behavior ([3c8daca](https://github.com/agile-north/dockship/commit/3c8dacaba0e7ed9b6d7295bbca43fb619eb9d43a))
+* Enhance Docker runner with auto mode and stage-based builds ([18ba17a](https://github.com/agile-north/dockship/commit/18ba17a0b3559e539abdda4befc97d72ccdb1cb7))
+
 ## [1.8.0](https://github.com/agile-north/dockship/compare/v1.7.0...v1.8.0) (2026-03-23)
 
 
