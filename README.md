@@ -297,7 +297,19 @@ Configuration precedence is:
     },
     "runner": "build",                  // Optional: build, buildx, or auto
     "platform": "linux/amd64",            // Optional: build platform
-    "buildArgs": { "ENV": "prod" }        // Optional: extra docker build args
+    "buildTarget": "export-stage",        // Optional: docker build --target
+    "buildOutput": "type=local,dest=./out", // Optional: docker build --output
+    "buildArgs": { "ENV": "prod" },       // Optional: extra docker build args
+    "stages": {
+      "validate": {
+        "target": "validate",
+        "output": "type=local,dest=./stage-validate"
+      },
+      "test": {
+        "target": "test",
+        "output": "type=local,dest=./stage-test"
+      }
+    }
   }
 }
 ```
@@ -317,7 +329,10 @@ Configuration precedence is:
 | `docker.cleanup.local` | `auto` \| boolean | `auto` | `DOCKER_CLEANUP_LOCAL` | `auto` cleans up in CI and keeps images locally for dev. `true` always removes built tags after `dock build`/`dock all`; `false` never removes them. |
 | `docker.runner` | `build` \| `buildx` \| `auto` | `build` | `DOCKER_RUNNER` | Selects Docker runner command. `auto` prefers `docker buildx build` and falls back to `docker build` |
 | `docker.platform` | string | empty | `DOCKER_PLATFORM` | Passed to `docker build --platform` |
+| `docker.buildTarget` | string | empty | `DOCKER_BUILD_TARGET` | Passed to `docker build --target` |
+| `docker.buildOutput` | string or string[] | empty | `DOCKER_BUILD_OUTPUT` | Passed to `docker build --output`; this may be `type=local,dest=...` or other buildx output spec |
 | `docker.buildArgs` | object | `{}` | `DOCKER_BUILD_ARGS` | Key/value pairs passed as `--build-arg KEY=value`; appended before the auto-generated `APP_VERSION` build arg. Env var accepts JSON (`{"K":"v"}`) or semicolon-delimited `KEY=value;KEY2=value2` |
+| `docker.stages` | object | `{}` | n/a | Stage definitions for `dock stage <name>` and `dock stage all`. Each stage may set `target`/`output`/`runner` to override `docker.buildTarget`, `docker.buildOutput`, `docker.runner` |
 
 To export files or artifacts from intermediate Dockerfile stages, set the runner to `buildx` (or `auto`) and pass `--target` and `--output` via `DOCKER_BUILD_ARGS`.
 
@@ -913,6 +928,9 @@ Version from Node.js:
 - `DOCKER_TAG_LATEST` – "true"/"false", override `docker.tags.latest`
 - `DOCKER_CLEANUP_LOCAL` – `auto`/`true`/`false`, remove locally built tags after `dock build` and `dock all`
 - `DOCKER_RUNNER` – `build`/`buildx`/`auto`, override `docker.runner`
+- `DOCKER_BUILD_TARGET` – override `docker.buildTarget` (`--target`)
+- `DOCKER_BUILD_OUTPUT` – override `docker.buildOutput` (`--output`)
+- `DOCKER_STAGES` – JSON object to override `docker.stages` for dynamic stage pipelines
 - `DOCKER_PLATFORM` – override `docker.platform`
 - `DOCKER_BUILD_ARGS` – build args as JSON (`{"ENV":"prod"}`) or semicolon-delimited `KEY=value;KEY2=value2`; overrides `docker.buildArgs`
 - `NPM_TOKEN` – for private npm (if using @agile-north providers)
