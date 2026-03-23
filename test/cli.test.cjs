@@ -26,6 +26,7 @@ const CLI_ENV_KEYS = [
   "DOCKERFILE_PATH",
   "DOCKER_PLATFORM",
   "DOCKER_BUILD_ARGS",
+  "DOCKER_RUNNER",
   "DOCKER_LOGIN_USERNAME",
   "DOCKER_LOGIN_PASSWORD",
   "DOCKER_LOGIN_REGISTRY",
@@ -531,6 +532,167 @@ test("build command passes expected docker arguments", t => {
     "ghcr.io/acme/widget:latest",
     "."
   ]);
+});
+
+test("build command uses docker buildx when runner is configured", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      },
+      runner: "buildx"
+    }
+  });
+
+  const result = runCliMain(repoRoot, "build");
+
+  assert.equal(result.status, 0, result.stderr || "Expected cli build command to succeed");
+  assert.deepEqual(result.dockerCommands[0], [
+    "buildx",
+    "build",
+    "--progress",
+    "plain",
+    "-f",
+    "Dockerfile",
+    "--build-arg",
+    "APP_VERSION=1.2.3",
+    "-t",
+    "ghcr.io/acme/widget:1.2.3",
+    "-t",
+    "ghcr.io/acme/widget:1",
+    "-t",
+    "ghcr.io/acme/widget:1.2",
+    "."
+  ]);
+});
+
+test("build command allows DOCKER_RUNNER env var to override config", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      },
+      runner: "buildx"
+    }
+  });
+
+  const result = runCliMain(repoRoot, "build", {
+    env: {
+      DOCKER_RUNNER: "build"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected cli build command to succeed");
+  assert.equal(result.dockerCommands[0][0], "build");
+});
+
+test("build command with auto runner prefers buildx when available", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      },
+      runner: "auto"
+    }
+  });
+
+  const result = runCliMain(repoRoot, "build", {
+    dockerResultFactory: args => {
+      if (args[0] === "buildx" && args[1] === "version") {
+        return {
+          status: 0,
+          stdout: "buildx 0.13.1",
+          stderr: ""
+        };
+      }
+
+      return {
+        status: 0,
+        stdout: "",
+        stderr: ""
+      };
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected cli build command to succeed");
+  assert.deepEqual(result.dockerCommands[0], ["buildx", "version"]);
+  assert.equal(result.dockerCommands[1][0], "buildx");
+  assert.equal(result.dockerCommands[1][1], "build");
+});
+
+test("build command with auto runner falls back to build when buildx is unavailable", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      },
+      runner: "auto"
+    }
+  });
+
+  const result = runCliMain(repoRoot, "build", {
+    dockerResultFactory: args => {
+      if (args[0] === "buildx" && args[1] === "version") {
+        return {
+          status: 1,
+          stdout: "",
+          stderr: "buildx not installed"
+        };
+      }
+
+      return {
+        status: 0,
+        stdout: "",
+        stderr: ""
+      };
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected cli build command to succeed");
+  assert.deepEqual(result.dockerCommands[0], ["buildx", "version"]);
+  assert.equal(result.dockerCommands[1][0], "build");
+});
+
+test("build command fails for unsupported docker runner", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      },
+      runner: "kaniko"
+    }
+  });
+
+  const result = runCliMain(repoRoot, "build");
+
+  assert.equal(result.status, 1, "Expected unsupported runner to fail");
+  assert.match(result.stderr, /Unsupported docker runner: kaniko/);
+  assert.match(result.stderr, /Supported values: build, buildx, auto/);
 });
 
 test("build command removes local image tags when cleanup is enabled", t => {

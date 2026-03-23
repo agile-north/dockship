@@ -224,7 +224,8 @@ Builds the Docker image locally.
   },
 
   "metadata": {
-    "platforms": ["linux/amd64"]
+    "platforms": ["linux/amd64"],
+    "runner": "build"
   }
 }
 ```
@@ -233,6 +234,7 @@ Notes:
 
 - `digest` will typically be `null`
 - cleanup refers to local image removal
+- `metadata.runner` is the effective runner used (`build` or `buildx`), including when configuration is `auto`
 
 ---
 
@@ -269,7 +271,8 @@ Pushes image to registry.
   },
 
   "metadata": {
-    "platforms": ["linux/amd64"]
+    "platforms": ["linux/amd64"],
+    "runner": "build"
   }
 }
 ```

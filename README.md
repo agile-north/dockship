@@ -259,6 +259,7 @@ The config file is optional. If `.dockship/dockship.json` is missing, dockship u
 - `docker.push.branches = []`
 - `docker.tags.latest = false`
 - `docker.cleanup.local = "auto"`
+- `docker.runner = "build"`
 
 For `dock build`, `dock ship`, and `dock all`, image target settings still need to come from config or env:
 
@@ -294,6 +295,7 @@ Configuration precedence is:
     "cleanup": {
       "local": "auto"                    // Auto: clean in CI, keep locally for dev
     },
+    "runner": "build",                  // Optional: build, buildx, or auto
     "platform": "linux/amd64",            // Optional: build platform
     "buildArgs": { "ENV": "prod" }        // Optional: extra docker build args
   }
@@ -313,8 +315,19 @@ Configuration precedence is:
 | `docker.push.branches` | string[] | `[]` | `DOCKER_PUSH_BRANCHES` | Branch allow-list; supports `*` wildcards |
 | `docker.tags.latest` | boolean | `false` | `DOCKER_TAG_LATEST` | Adds the `latest` tag in addition to semantic tags |
 | `docker.cleanup.local` | `auto` \| boolean | `auto` | `DOCKER_CLEANUP_LOCAL` | `auto` cleans up in CI and keeps images locally for dev. `true` always removes built tags after `dock build`/`dock all`; `false` never removes them. |
+| `docker.runner` | `build` \| `buildx` \| `auto` | `build` | `DOCKER_RUNNER` | Selects Docker runner command. `auto` prefers `docker buildx build` and falls back to `docker build` |
 | `docker.platform` | string | empty | `DOCKER_PLATFORM` | Passed to `docker build --platform` |
 | `docker.buildArgs` | object | `{}` | `DOCKER_BUILD_ARGS` | Key/value pairs passed as `--build-arg KEY=value`; appended before the auto-generated `APP_VERSION` build arg. Env var accepts JSON (`{"K":"v"}`) or semicolon-delimited `KEY=value;KEY2=value2` |
+
+To export files or artifacts from intermediate Dockerfile stages, set the runner to `buildx` (or `auto`) and pass `--target` and `--output` via `DOCKER_BUILD_ARGS`.
+
+Example:
+
+```bash
+DOCKER_RUNNER=buildx \
+DOCKER_BUILD_ARGS='--target export-stage;--output=type=local,dest=./out' \
+npx dock build
+```
 
 Optional registry login environment variables:
 
@@ -362,6 +375,7 @@ Environment variable overrides (CI):
 - `DOCKER_PUSH_BRANCHES`
 - `DOCKER_TAG_LATEST`
 - `DOCKER_CLEANUP_LOCAL`
+- `DOCKER_RUNNER`
 - `DOCKER_LOGIN_USERNAME`
 - `DOCKER_LOGIN_PASSWORD`
 - `DOCKER_LOGIN_REGISTRY`
@@ -898,6 +912,7 @@ Version from Node.js:
 - `DOCKER_PUSH_BRANCHES` – comma/semicolon/newline separated branch patterns, supports `*`
 - `DOCKER_TAG_LATEST` – "true"/"false", override `docker.tags.latest`
 - `DOCKER_CLEANUP_LOCAL` – `auto`/`true`/`false`, remove locally built tags after `dock build` and `dock all`
+- `DOCKER_RUNNER` – `build`/`buildx`/`auto`, override `docker.runner`
 - `DOCKER_PLATFORM` – override `docker.platform`
 - `DOCKER_BUILD_ARGS` – build args as JSON (`{"ENV":"prod"}`) or semicolon-delimited `KEY=value;KEY2=value2`; overrides `docker.buildArgs`
 - `NPM_TOKEN` – for private npm (if using @agile-north providers)
