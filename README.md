@@ -333,6 +333,7 @@ Configuration precedence is:
 | `docker.buildOutput` | string or string[] | empty | `DOCKER_BUILD_OUTPUT` | Passed to `docker build --output`; this may be `type=local,dest=...` or other buildx output spec |
 | `docker.buildArgs` | object | `{}` | `DOCKER_BUILD_ARGS` | Key/value pairs passed as `--build-arg KEY=value`; appended before the auto-generated `APP_VERSION` build arg. Env var accepts JSON (`{"K":"v"}`) or semicolon-delimited `KEY=value;KEY2=value2` |
 | `docker.stages` | object | `{}` | n/a | Stage definitions for `dock stage <name>` and `dock stage all`. Each stage may set `target`/`output`/`runner` to override `docker.buildTarget`, `docker.buildOutput`, `docker.runner` |
+| `docker.stageFallback` | boolean | `true` | n/a | When true, `dock stage all` runs a final no-target build after configured stages (default). |
 
 To export files or artifacts from intermediate Dockerfile stages, set the runner to `buildx` (or `auto`) and pass `--target` and `--output` via `DOCKER_BUILD_ARGS`.
 

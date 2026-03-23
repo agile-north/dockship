@@ -607,9 +607,10 @@ test("stage all runs configured stages sequentially", t => {
   });
 
   assert.equal(result.status, 0, result.stderr || "Expected stage all to succeed");
-  assert.equal(result.dockerCommands.length, 2);
+  assert.equal(result.dockerCommands.length, 3);
   assert.equal(result.dockerCommands[0][result.dockerCommands[0].indexOf("--target") + 1], "validate");
   assert.equal(result.dockerCommands[1][result.dockerCommands[1].indexOf("--target") + 1], "test");
+  assert.equal(result.dockerCommands[2].includes("--target"), false, "fallback final build should not include --target");
 });
 
 test("stage all with no stages configured falls back to one build", t => {
@@ -660,9 +661,10 @@ test("stage all reads stage definitions from DOCKER_STAGES env", t => {
   });
 
   assert.equal(result.status, 0, result.stderr || "Expected stage all env-based stage config to succeed");
-  assert.equal(result.dockerCommands.length, 2);
+  assert.equal(result.dockerCommands.length, 3);
   assert.equal(result.dockerCommands[0][result.dockerCommands[0].indexOf("--target") + 1], "validate");
   assert.equal(result.dockerCommands[1][result.dockerCommands[1].indexOf("--target") + 1], "test");
+  assert.equal(result.dockerCommands[2].includes("--target"), false, "fallback final build should not include target");
 });
 
 

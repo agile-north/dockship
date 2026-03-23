@@ -16,6 +16,7 @@ const CMD_BUILD = "build";
 const CMD_PUSH = "push";
 const CMD_SHIP = "ship";
 const CMD_STAGE = "stage";
+const CMD_TARGET = "target";
 const CMD_ALL = "all";
 const CMD_VERSION = "version";
 const CMD_TAGS = "tags";
@@ -961,15 +962,21 @@ function resolveSettingsForStage(config, env, repoRoot, stageName) {
   return settings;
 }
 
-function runStage(repoRoot, version, config, env, stageName, outputMode) {
+function runStage(repoRoot, version, config, env, stageName, outputMode, options = {}) {
   const settings = resolveSettingsForStage(config, env, repoRoot, stageName);
+  const cleanup = options.cleanup !== false;
   let removedReferences = [];
 
   withDockerAuth(repoRoot, env, settings, authEnv => {
     try {
       dockerBuild(repoRoot, version, settings, authEnv, outputMode);
+      if (cleanup && settings.cleanupLocal) {
+        removedReferences = dockerCleanupLocalImages(repoRoot, version, settings, authEnv, outputMode);
+      }
     } finally {
-      removedReferences = dockerCleanupLocalImages(repoRoot, version, settings, authEnv, outputMode);
+      if (!cleanup) {
+        // If cleanup is disabled, do nothing here and leave images for potential push
+      }
     }
   });
 
@@ -982,7 +989,7 @@ function runStage(repoRoot, version, config, env, stageName, outputMode) {
         stage: stageName,
         performed: true,
         cleanup: {
-          enabled: settings.cleanupLocal,
+          enabled: cleanup && settings.cleanupLocal,
           removedReferences
         }
       },
@@ -993,9 +1000,12 @@ function runStage(repoRoot, version, config, env, stageName, outputMode) {
   };
 }
 
-function runStageAll(repoRoot, version, config, env, outputMode) {
+function runStageAll(repoRoot, version, config, env, outputMode, options = {}) {
   const stageNames = getStageNames(config, env);
   const results = [];
+  const cleanupStages = options.cleanupStages !== false;
+
+  const shouldFallback = getString(config && config.docker && config.docker.stageFallback, "true").toLowerCase() !== "false";
 
   if (!stageNames.length) {
     const settings = getDockerSettings(config, env, repoRoot, { requireImageTarget: true });
@@ -1039,7 +1049,9 @@ function runStageAll(repoRoot, version, config, env, outputMode) {
   let lastArtifact = null;
 
   stageNames.forEach(stageName => {
-    const stageResult = runStage(repoRoot, version, config, env, stageName, outputMode);
+    const stageResult = runStage(repoRoot, version, config, env, stageName, outputMode, {
+      cleanup: cleanupStages
+    });
     results.push({ stage: stageName, result: stageResult.result });
 
     lastArtifact = stageResult.result.artifact;
@@ -1049,11 +1061,52 @@ function runStageAll(repoRoot, version, config, env, outputMode) {
     }
   });
 
+  if (stageNames.length > 0 && overallStatus === STATUS_SUCCESS && shouldFallback) {
+    const finalResult = runFallbackBuild(repoRoot, version, config, env, outputMode);
+    results.push({ stage: "final", result: finalResult.result });
+    lastArtifact = finalResult.result.artifact;
+
+    if (finalResult.status === STATUS_FAILED) {
+      overallStatus = STATUS_FAILED;
+    }
+  }
+
   return {
     status: overallStatus,
     result: {
       artifact: lastArtifact,
       stages: results
+    },
+    warnings: [],
+    errors: []
+  };
+}
+
+function runFallbackBuild(repoRoot, version, config, env, outputMode) {
+  const settings = getDockerSettings(config, env, repoRoot, { requireImageTarget: true });
+  let removedReferences = [];
+
+  withDockerAuth(repoRoot, env, settings, authEnv => {
+    try {
+      dockerBuild(repoRoot, version, settings, authEnv, outputMode);
+    } finally {
+      removedReferences = dockerCleanupLocalImages(repoRoot, version, settings, authEnv, outputMode);
+    }
+  });
+
+  return {
+    status: STATUS_SUCCESS,
+    result: {
+      artifact: buildArtifact(version, settings),
+      operation: {
+        type: "stage-fallback",
+        performed: true,
+        cleanup: {
+          enabled: settings.cleanupLocal,
+          removedReferences
+        }
+      },
+      metadata: buildMetadata(settings)
     },
     warnings: [],
     errors: []
@@ -1517,9 +1570,10 @@ function executeJsonCommand(command, commandArg, root, config, version, env) {
       };
     }
 
-    case CMD_STAGE: {
+    case CMD_STAGE:
+    case CMD_TARGET: {
       if (!commandArg) {
-        throw new Error("stage command requires a stage name");
+        throw new Error("stage/target command requires a stage name");
       }
 
       if (commandArg === CMD_ALL) {
@@ -1556,6 +1610,53 @@ function executeJsonCommand(command, commandArg, root, config, version, env) {
 
     case CMD_ALL: {
       const docker = getDockerSettings(config, env, root, { requireImageTarget: true });
+      const stageNames = getStageNames(config, env);
+
+      if (stageNames.length > 0) {
+        const stageResult = runStageAll(root, version, config, env, OUTPUT_MODE_JSON, { cleanupStages: false });
+        let pushStep;
+
+        withDockerAuth(root, env, docker, authEnv => {
+          const stepStartedAtPush = Date.now();
+          const p = executePushDetailed(root, version, docker, authEnv, CMD_PUSH, OUTPUT_MODE_JSON, warnings, errors);
+          pushStep = {
+            durationMs: Math.max(0, Date.now() - stepStartedAtPush),
+            artifact: p.artifact,
+            operation: p.operation,
+            metadata: p.metadata,
+            status: p.status
+          };
+
+          if (docker.cleanupLocal) {
+            dockerCleanupLocalImages(root, version, docker, authEnv, OUTPUT_MODE_JSON);
+          }
+        });
+
+        let status = stageResult.status;
+
+        if (pushStep.status === STATUS_FAILED) {
+          status = STATUS_FAILED;
+        } else if (pushStep.status === STATUS_PARTIAL) {
+          status = STATUS_PARTIAL;
+        }
+
+        const topArtifact = pushStep && !pushStep.operation.skipped ? pushStep.artifact : stageResult.result.artifact;
+
+        return {
+          status,
+          result: {
+            artifact: topArtifact,
+            steps: {
+              stages: stageResult.result.stages,
+              push: pushStep
+            }
+          },
+          warnings,
+          errors
+        };
+      }
+
+      // fallback path (no stages defined) continues existing behavior
       const stepStartedAtBuild = Date.now();
       let buildStep;
       let pushStep;
@@ -1579,13 +1680,13 @@ function executeJsonCommand(command, commandArg, root, config, version, env) {
           };
 
           const stepStartedAtPush = Date.now();
-          pushStep = executePushDetailed(root, version, docker, authEnv, CMD_PUSH, OUTPUT_MODE_JSON, warnings, errors);
+          const p = executePushDetailed(root, version, docker, authEnv, CMD_PUSH, OUTPUT_MODE_JSON, warnings, errors);
           pushStep = {
             durationMs: Math.max(0, Date.now() - stepStartedAtPush),
-            artifact: pushStep.artifact,
-            operation: pushStep.operation,
-            metadata: pushStep.metadata,
-            status: pushStep.status
+            artifact: p.artifact,
+            operation: p.operation,
+            metadata: p.metadata,
+            status: p.status
           };
         } finally {
           removedReferences = dockerCleanupLocalImages(root, version, docker, authEnv, OUTPUT_MODE_JSON);
@@ -1653,6 +1754,7 @@ USAGE:
 COMMANDS:
   build          Build Docker image(s) with version tags (default)
   stage <name>   Build a named stage using docker --target + --output
+  target <name>  Alias for stage command (Docker-compatible phrase)
   stage all      Run configured stages sequentially (definition in dockship.json)
   ship, push     Push existing image tags to registry
   all            Build image(s), then push them to registry
@@ -1833,6 +1935,26 @@ function main() {
 
     case CMD_ALL: {
       const docker = getDockerSettings(config, process.env, root, { requireImageTarget: true });
+      const stageNames = getStageNames(config, process.env);
+
+      if (stageNames.length > 0) {
+        const stageResult = runStageAll(root, version, config, process.env, OUTPUT_MODE_HUMAN, { cleanupStages: false });
+
+        withDockerAuth(root, process.env, docker, authEnv => {
+          try {
+            dockerPush(root, version, docker, authEnv, OUTPUT_MODE_HUMAN);
+          } finally {
+            dockerCleanupLocalImages(root, version, docker, authEnv, OUTPUT_MODE_HUMAN);
+          }
+        });
+
+        if (stageResult.status === STATUS_FAILED) {
+          process.exitCode = EXIT_FAILED;
+        }
+
+        break;
+      }
+
       withDockerAuth(root, process.env, docker, authEnv => {
         try {
           dockerBuild(root, version, docker, authEnv, OUTPUT_MODE_HUMAN);
@@ -1844,9 +1966,10 @@ function main() {
       break;
     }
 
-    case CMD_STAGE: {
+    case CMD_STAGE:
+    case CMD_TARGET: {
       if (!parsed.commandArg) {
-        throw new Error("stage command requires a stage name");
+        throw new Error("stage/target command requires a stage name");
       }
 
       if (parsed.commandArg === CMD_ALL) {
