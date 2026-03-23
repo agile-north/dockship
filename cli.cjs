@@ -1063,7 +1063,7 @@ function runStageAll(repoRoot, version, config, env, outputMode, options = {}) {
   });
 
   if (stageNames.length > 0 && overallStatus === STATUS_SUCCESS && shouldFallback) {
-    const finalResult = runFallbackBuild(repoRoot, version, config, env, outputMode);
+    const finalResult = runFallbackBuild(repoRoot, version, config, env, outputMode, { cleanup: cleanupStages });
     results.push({ stage: "final", result: finalResult.result });
     lastArtifact = finalResult.result.artifact;
 
@@ -1083,7 +1083,8 @@ function runStageAll(repoRoot, version, config, env, outputMode, options = {}) {
   };
 }
 
-function runFallbackBuild(repoRoot, version, config, env, outputMode) {
+function runFallbackBuild(repoRoot, version, config, env, outputMode, options = {}) {
+  const cleanup = options.cleanup !== false;
   const settings = getDockerSettings(config, env, repoRoot, { requireImageTarget: true });
   let removedReferences = [];
 
@@ -1091,7 +1092,9 @@ function runFallbackBuild(repoRoot, version, config, env, outputMode) {
     try {
       dockerBuild(repoRoot, version, settings, authEnv, outputMode);
     } finally {
-      removedReferences = dockerCleanupLocalImages(repoRoot, version, settings, authEnv, outputMode);
+      if (cleanup && settings.cleanupLocal) {
+        removedReferences = dockerCleanupLocalImages(repoRoot, version, settings, authEnv, outputMode);
+      }
     }
   });
 
