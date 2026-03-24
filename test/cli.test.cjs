@@ -213,6 +213,44 @@ test("version --json --output-file writes JSON envelope to file and does not pri
   assert.equal(payload.success, true);
 });
 
+test("version --output-json-file writes JSON envelope to file without --json and does not print to stdout", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  const outputPath = path.join(repoRoot, "dockship-output-json-file.json");
+
+  const result = runNodeScript(CLI_PATH, ["version", "--output-json-file", outputPath], { cwd: repoRoot });
+
+  assert.equal(result.status, 0, result.stderr || "Expected version --output-json-file command to succeed");
+  assert.equal(result.stdout.trim(), "", "Expected no JSON envelope on stdout when --output-json-file is used");
+
+  const payload = JSON.parse(fs.readFileSync(outputPath, "utf8"));
+
+  assert.equal(payload.command, "version");
+  assert.equal(payload.outputMode, "json");
+  assert.equal(payload.success, true);
+});
+
+test("version --output-file writes JSON envelope to file without --json and does not print to stdout", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  const outputPath = path.join(repoRoot, "dockship-output-file.json");
+
+  const result = runNodeScript(CLI_PATH, ["version", "--output-file", outputPath], { cwd: repoRoot });
+
+  assert.equal(result.status, 0, result.stderr || "Expected version --output-file command to succeed");
+  assert.equal(result.stdout.trim(), "", "Expected no JSON envelope on stdout when --output-file is used");
+
+  const payload = JSON.parse(fs.readFileSync(outputPath, "utf8"));
+
+  assert.equal(payload.command, "version");
+  assert.equal(payload.outputMode, "json");
+  assert.equal(payload.success, true);
+});
+
 test("tags command supports --output json envelope", t => {
   const repoRoot = createTempRepo(t);
 
