@@ -25,6 +25,8 @@ const FLAG_HELP = "--help";
 const FLAG_HELP_SHORT = "-h";
 const FLAG_JSON = "--json";
 const FLAG_OUTPUT = "--output";
+const FLAG_OUTPUT_FILE = "--output-file";
+const FLAG_JSON_FILE = "--json-file";
 
 // Output modes
 const OUTPUT_MODE_HUMAN = "human";
@@ -424,11 +426,34 @@ function hasJsonOutputFlag(argv) {
   return false;
 }
 
+function getOutputFileArg(argv) {
+  const args = Array.isArray(argv) ? argv : [];
+
+  for (let i = 0; i < args.length; i += 1) {
+    const token = getString(args[i]);
+
+    if (token === FLAG_OUTPUT_FILE || token === FLAG_JSON_FILE) {
+      return getString(args[i + 1]);
+    }
+
+    if (token.startsWith(`${FLAG_OUTPUT_FILE}=`)) {
+      return token.slice(`${FLAG_OUTPUT_FILE}=`.length);
+    }
+
+    if (token.startsWith(`${FLAG_JSON_FILE}=`)) {
+      return token.slice(`${FLAG_JSON_FILE}=`.length);
+    }
+  }
+
+  return EMPTY_STRING;
+}
+
 function parseCliArgs(argv) {
   const args = Array.isArray(argv) ? argv : [];
   let command = EMPTY_STRING;
   let commandArg = EMPTY_STRING;
   let outputMode = OUTPUT_MODE_HUMAN;
+  let outputFile = EMPTY_STRING;
 
   for (let i = 0; i < args.length; i += 1) {
     const token = getString(args[i]);
@@ -466,6 +491,28 @@ function parseCliArgs(argv) {
       continue;
     }
 
+    if (token === FLAG_OUTPUT_FILE || token === FLAG_JSON_FILE) {
+      const nextValue = args[i + 1];
+
+      if (!nextValue) {
+        throw new Error(`${token} requires a file path`);
+      }
+
+      outputFile = nextValue;
+      i += 1;
+      continue;
+    }
+
+    if (token.startsWith(`${FLAG_OUTPUT_FILE}=`)) {
+      outputFile = token.slice(`${FLAG_OUTPUT_FILE}=`.length);
+      continue;
+    }
+
+    if (token.startsWith(`${FLAG_JSON_FILE}=`)) {
+      outputFile = token.slice(`${FLAG_JSON_FILE}=`.length);
+      continue;
+    }
+
     if (token.startsWith("-")) {
       throw new Error(`Unknown option: ${token}`);
     }
@@ -486,7 +533,8 @@ function parseCliArgs(argv) {
   return {
     command: command || CMD_BUILD,
     commandArg,
-    outputMode
+    outputMode,
+    outputFile
   };
 }
 
@@ -1788,6 +1836,7 @@ EXAMPLES:
   dock version            # Display resolved version info
   dock tags               # Show what tags will be applied
   dock build --json       # Emit machine-readable JSON envelope
+  dock --json --output-file result.json  # Write JSON envelope to file (stdout remains clean)
   dock --output json all  # Build and push with JSON output
   dock --help             # Show help menu
 
@@ -1859,7 +1908,15 @@ function main() {
       [createError(STATUS_ERROR_CODE_USAGE, errorMessage, {})]
     );
 
-    console.log(JSON.stringify(envelope, null, 2));
+    const outputFile = getOutputFileArg(rawArgs);
+    const envelopeText = JSON.stringify(envelope, null, 2);
+
+    if (outputFile) {
+      fs.writeFileSync(path.resolve(repoRoot, outputFile), `${envelopeText}\n`, "utf8");
+    } else {
+      console.log(envelopeText);
+    }
+
     process.exitCode = EXIT_USAGE;
     return envelope;
   }
@@ -1898,7 +1955,13 @@ function main() {
         executed.errors
       );
 
-      console.log(JSON.stringify(envelope, null, 2));
+      const envelopeText = JSON.stringify(envelope, null, 2);
+      if (parsed.outputFile) {
+        fs.writeFileSync(path.resolve(root, parsed.outputFile), `${envelopeText}\n`, "utf8");
+      } else {
+        console.log(envelopeText);
+      }
+
       process.exitCode = getStatusExitCode(executed.status);
       return envelope;
     } catch (err) {
@@ -1922,7 +1985,13 @@ function main() {
         ]
       );
 
-      console.log(JSON.stringify(envelope, null, 2));
+      const envelopeText = JSON.stringify(envelope, null, 2);
+      if (parsed.outputFile) {
+        fs.writeFileSync(path.resolve(root, parsed.outputFile), `${envelopeText}\n`, "utf8");
+      } else {
+        console.log(envelopeText);
+      }
+
       process.exitCode = getStatusExitCode(STATUS_FAILED, usageError);
       return envelope;
     }

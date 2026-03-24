@@ -69,7 +69,8 @@ Status rules:
 
 Transport rules:
 
-- In JSON mode, stdout MUST contain exactly one JSON object and no extra text.
+- In JSON mode, stdout MUST contain exactly one JSON object and no extra text unless an explicit file output is enabled.
+- When CLI is run with `--output-file` or `--json-file`, the JSON envelope MUST be written to that file and stdout MUST be free for human logs.
 - stderr MAY contain diagnostics and operational logs.
 
 ---
