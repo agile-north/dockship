@@ -1593,15 +1593,21 @@ function executePushDetailed(repoRoot, version, settings, env, commandType, outp
   };
 }
 
-function executeJsonCommand(command, commandArg, root, config, version, env) {
+function executeJsonCommand(command, commandArg, root, config, version, env, commandOutputMode = OUTPUT_MODE_JSON) {
   const warnings = [];
   const errors = [];
 
   switch (command) {
     case CMD_VERSION: {
+      const result = buildVersionResult(version);
+
+      if (commandOutputMode === OUTPUT_MODE_HUMAN) {
+        console.log(JSON.stringify(result, null, 2));
+      }
+
       return {
         status: STATUS_SUCCESS,
-        result: buildVersionResult(version),
+        result,
         warnings,
         errors
       };
@@ -1609,13 +1615,19 @@ function executeJsonCommand(command, commandArg, root, config, version, env) {
 
     case CMD_TAGS: {
       const docker = getDockerSettings(config, env, root);
+      const tags = getTags(version, docker);
+      const result = {
+        artifact: buildArtifact(version, docker),
+        latestIncluded: tags.includes("latest")
+      };
+
+      if (commandOutputMode === OUTPUT_MODE_HUMAN) {
+        console.log(JSON.stringify(tags, null, 2));
+      }
 
       return {
         status: STATUS_SUCCESS,
-        result: {
-          artifact: buildArtifact(version, docker),
-          latestIncluded: getTags(version, docker).includes("latest")
-        },
+        result,
         warnings,
         errors
       };
@@ -1627,9 +1639,9 @@ function executeJsonCommand(command, commandArg, root, config, version, env) {
 
       withDockerAuth(root, env, docker, authEnv => {
         try {
-          dockerBuild(root, version, docker, authEnv, OUTPUT_MODE_JSON);
+          dockerBuild(root, version, docker, authEnv, commandOutputMode);
         } finally {
-          removedReferences = dockerCleanupLocalImages(root, version, docker, authEnv, OUTPUT_MODE_JSON);
+          removedReferences = dockerCleanupLocalImages(root, version, docker, authEnv, commandOutputMode);
         }
       });
 
@@ -1659,14 +1671,14 @@ function executeJsonCommand(command, commandArg, root, config, version, env) {
       }
 
       if (commandArg === CMD_ALL) {
-        return runStageAll(root, version, config, env, OUTPUT_MODE_JSON);
+        return runStageAll(root, version, config, env, commandOutputMode);
       }
 
       if (!getStageDefinition(config, env, commandArg)) {
         throw new Error(`Unknown stage: ${commandArg}`);
       }
 
-      return runStage(root, version, config, env, commandArg, OUTPUT_MODE_JSON);
+      return runStage(root, version, config, env, commandArg, commandOutputMode);
     }
 
     case CMD_PUSH:
@@ -1675,7 +1687,7 @@ function executeJsonCommand(command, commandArg, root, config, version, env) {
       let pushResult;
 
       withDockerAuth(root, env, docker, authEnv => {
-        pushResult = executePushDetailed(root, version, docker, authEnv, command, OUTPUT_MODE_JSON, warnings, errors);
+        pushResult = executePushDetailed(root, version, docker, authEnv, command, commandOutputMode, warnings, errors);
       });
 
       return {
@@ -1695,12 +1707,12 @@ function executeJsonCommand(command, commandArg, root, config, version, env) {
       const stageNames = getStageNames(config, env);
 
       if (stageNames.length > 0) {
-        const stageResult = runStageAll(root, version, config, env, OUTPUT_MODE_JSON, { cleanupStages: false });
+        const stageResult = runStageAll(root, version, config, env, commandOutputMode, { cleanupStages: false });
         let pushStep;
 
         withDockerAuth(root, env, docker, authEnv => {
           const stepStartedAtPush = Date.now();
-          const p = executePushDetailed(root, version, docker, authEnv, CMD_PUSH, OUTPUT_MODE_JSON, warnings, errors);
+          const p = executePushDetailed(root, version, docker, authEnv, CMD_PUSH, commandOutputMode, warnings, errors);
           pushStep = {
             durationMs: Math.max(0, Date.now() - stepStartedAtPush),
             artifact: p.artifact,
@@ -1710,7 +1722,7 @@ function executeJsonCommand(command, commandArg, root, config, version, env) {
           };
 
           if (docker.cleanupLocal) {
-            dockerCleanupLocalImages(root, version, docker, authEnv, OUTPUT_MODE_JSON);
+            dockerCleanupLocalImages(root, version, docker, authEnv, commandOutputMode);
           }
         });
 
@@ -1746,7 +1758,7 @@ function executeJsonCommand(command, commandArg, root, config, version, env) {
 
       withDockerAuth(root, env, docker, authEnv => {
         try {
-          dockerBuild(root, version, docker, authEnv, OUTPUT_MODE_JSON);
+          dockerBuild(root, version, docker, authEnv, commandOutputMode);
           buildStep = {
             durationMs: Math.max(0, Date.now() - stepStartedAtBuild),
             artifact: buildArtifact(version, docker),
@@ -1762,7 +1774,7 @@ function executeJsonCommand(command, commandArg, root, config, version, env) {
           };
 
           const stepStartedAtPush = Date.now();
-          const p = executePushDetailed(root, version, docker, authEnv, CMD_PUSH, OUTPUT_MODE_JSON, warnings, errors);
+          const p = executePushDetailed(root, version, docker, authEnv, CMD_PUSH, commandOutputMode, warnings, errors);
           pushStep = {
             durationMs: Math.max(0, Date.now() - stepStartedAtPush),
             artifact: p.artifact,
@@ -1771,7 +1783,7 @@ function executeJsonCommand(command, commandArg, root, config, version, env) {
             status: p.status
           };
         } finally {
-          removedReferences = dockerCleanupLocalImages(root, version, docker, authEnv, OUTPUT_MODE_JSON);
+          removedReferences = dockerCleanupLocalImages(root, version, docker, authEnv, commandOutputMode);
         }
       });
 
@@ -1940,7 +1952,9 @@ function main() {
 
   const cmd = parsed.command;
   const outputMode = parsed.outputMode;
+  const hasOutputFile = Boolean(parsed.outputFile);
   const startedAt = Date.now();
+  const commandOutputMode = hasOutputFile ? OUTPUT_MODE_HUMAN : outputMode;
 
   // Handle help flags/command early
   if (cmd === CMD_HELP || cmd === FLAG_HELP || cmd === FLAG_HELP_SHORT) {
@@ -1957,9 +1971,9 @@ function main() {
 
   const version = getVersion(root);
 
-  if (outputMode === OUTPUT_MODE_JSON) {
+  if (outputMode === OUTPUT_MODE_JSON || hasOutputFile) {
     try {
-      const executed = executeJsonCommand(cmd, parsed.commandArg, root, config, version, process.env);
+      const executed = executeJsonCommand(cmd, parsed.commandArg, root, config, version, process.env, commandOutputMode);
       const envelope = createEnvelope(
         cmd,
         OUTPUT_MODE_JSON,
