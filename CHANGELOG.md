@@ -30,6 +30,14 @@ Legacy flat keys are still supported as compatibility aliases:
 * `docker.pushBranches` → `docker.push.branches`
 * `docker.tagLatest` → `docker.tags.latest`
 
+## [1.10.0](https://github.com/agile-north/dockship/compare/v1.9.2...v1.10.0) (2026-03-24)
+
+
+### Features
+
+* add --output-file/--json-file support for JSON mode; preserve stdout logs ([8cd7726](https://github.com/agile-north/dockship/commit/8cd77267e4d045620da8b7c8e87d3f599875b55e))
+* Enhance cleanup behavior and add JSON output file support ([265cc7e](https://github.com/agile-north/dockship/commit/265cc7e9091297ca9a6483711efcd66e016002cb))
+
 ## [1.9.2](https://github.com/agile-north/dockship/compare/v1.9.1...v1.9.2) (2026-03-23)
 
 
