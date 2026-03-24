@@ -27,6 +27,7 @@ const FLAG_JSON = "--json";
 const FLAG_OUTPUT = "--output";
 const FLAG_OUTPUT_FILE = "--output-file";
 const FLAG_JSON_FILE = "--json-file";
+const FLAG_OUTPUT_JSON_FILE = "--output-json-file";
 
 // Output modes
 const OUTPUT_MODE_HUMAN = "human";
@@ -406,7 +407,7 @@ function hasJsonOutputFlag(argv) {
   for (let i = 0; i < args.length; i += 1) {
     const token = getString(args[i]);
 
-    if (token === FLAG_JSON) {
+    if (token === FLAG_JSON || token === FLAG_OUTPUT_FILE || token === FLAG_JSON_FILE || token === FLAG_OUTPUT_JSON_FILE) {
       return true;
     }
 
@@ -421,6 +422,10 @@ function hasJsonOutputFlag(argv) {
     if (token.startsWith(`${FLAG_OUTPUT}=`) && token.slice(`${FLAG_OUTPUT}=`.length).toLowerCase() === OUTPUT_MODE_JSON) {
       return true;
     }
+
+    if (token.startsWith(`${FLAG_OUTPUT_JSON_FILE}=`)) {
+      return true;
+    }
   }
 
   return false;
@@ -432,7 +437,7 @@ function getOutputFileArg(argv) {
   for (let i = 0; i < args.length; i += 1) {
     const token = getString(args[i]);
 
-    if (token === FLAG_OUTPUT_FILE || token === FLAG_JSON_FILE) {
+    if (token === FLAG_OUTPUT_FILE || token === FLAG_JSON_FILE || token === FLAG_OUTPUT_JSON_FILE) {
       return getString(args[i + 1]);
     }
 
@@ -442,6 +447,10 @@ function getOutputFileArg(argv) {
 
     if (token.startsWith(`${FLAG_JSON_FILE}=`)) {
       return token.slice(`${FLAG_JSON_FILE}=`.length);
+    }
+
+    if (token.startsWith(`${FLAG_OUTPUT_JSON_FILE}=`)) {
+      return token.slice(`${FLAG_OUTPUT_JSON_FILE}=`.length);
     }
   }
 
@@ -491,7 +500,7 @@ function parseCliArgs(argv) {
       continue;
     }
 
-    if (token === FLAG_OUTPUT_FILE || token === FLAG_JSON_FILE) {
+    if (token === FLAG_OUTPUT_FILE || token === FLAG_JSON_FILE || token === FLAG_OUTPUT_JSON_FILE) {
       const nextValue = args[i + 1];
 
       if (!nextValue) {
@@ -499,6 +508,8 @@ function parseCliArgs(argv) {
       }
 
       outputFile = nextValue;
+      outputMode = OUTPUT_MODE_JSON;
+
       i += 1;
       continue;
     }
@@ -510,6 +521,12 @@ function parseCliArgs(argv) {
 
     if (token.startsWith(`${FLAG_JSON_FILE}=`)) {
       outputFile = token.slice(`${FLAG_JSON_FILE}=`.length);
+      continue;
+    }
+
+    if (token.startsWith(`${FLAG_OUTPUT_JSON_FILE}=`)) {
+      outputFile = token.slice(`${FLAG_OUTPUT_JSON_FILE}=`.length);
+      outputMode = OUTPUT_MODE_JSON;
       continue;
     }
 
