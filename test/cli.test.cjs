@@ -204,7 +204,7 @@ test("version --json --output-file writes JSON envelope to file and does not pri
   const result = runNodeScript(CLI_PATH, ["version", "--json", "--output-file", outputPath], { cwd: repoRoot });
 
   assert.equal(result.status, 0, result.stderr || "Expected version --json --output-file command to succeed");
-  assert.ok(result.stdout.trim().length > 0, "Expected stdout to still produce human output when --output-file is used");
+  assert.equal(result.stdout.trim(), "", "Expected no JSON envelope on stdout when --output-file is used");
 
   const payload = JSON.parse(fs.readFileSync(outputPath, "utf8"));
 
@@ -223,7 +223,7 @@ test("version --output-json-file writes JSON envelope to file without --json and
   const result = runNodeScript(CLI_PATH, ["version", "--output-json-file", outputPath], { cwd: repoRoot });
 
   assert.equal(result.status, 0, result.stderr || "Expected version --output-json-file command to succeed");
-  assert.ok(result.stdout.trim().length > 0, "Expected stdout to still produce human output when --output-json-file is used");
+  assert.equal(result.stdout.trim(), "", "Expected no JSON envelope on stdout when --output-json-file is used");
 
   const payload = JSON.parse(fs.readFileSync(outputPath, "utf8"));
 
@@ -242,7 +242,7 @@ test("version --output-file writes JSON envelope to file without --json and does
   const result = runNodeScript(CLI_PATH, ["version", "--output-file", outputPath], { cwd: repoRoot });
 
   assert.equal(result.status, 0, result.stderr || "Expected version --output-file command to succeed");
-  assert.ok(result.stdout.trim().length > 0, "Expected stdout to still produce human output when --output-file is used");
+  assert.equal(result.stdout.trim(), "", "Expected no JSON envelope on stdout when --output-file is used");
 
   const payload = JSON.parse(fs.readFileSync(outputPath, "utf8"));
 

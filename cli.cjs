@@ -1599,15 +1599,9 @@ function executeJsonCommand(command, commandArg, root, config, version, env, com
 
   switch (command) {
     case CMD_VERSION: {
-      const result = buildVersionResult(version);
-
-      if (commandOutputMode === OUTPUT_MODE_HUMAN) {
-        console.log(JSON.stringify(result, null, 2));
-      }
-
       return {
         status: STATUS_SUCCESS,
-        result,
+        result: buildVersionResult(version),
         warnings,
         errors
       };
@@ -1615,15 +1609,15 @@ function executeJsonCommand(command, commandArg, root, config, version, env, com
 
     case CMD_TAGS: {
       const docker = getDockerSettings(config, env, root);
-      const tags = getTags(version, docker);
-      const result = {
-        artifact: buildArtifact(version, docker),
-        latestIncluded: tags.includes("latest")
+      return {
+        status: STATUS_SUCCESS,
+        result: {
+          artifact: buildArtifact(version, docker),
+          latestIncluded: getTags(version, docker).includes("latest")
+        },
+        warnings,
+        errors
       };
-
-      if (commandOutputMode === OUTPUT_MODE_HUMAN) {
-        console.log(JSON.stringify(tags, null, 2));
-      }
 
       return {
         status: STATUS_SUCCESS,
