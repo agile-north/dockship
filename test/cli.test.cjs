@@ -194,6 +194,25 @@ test("version command supports --json envelope with patch/build compatibility", 
   assert.equal(payload.result.components.patch, payload.result.patch);
 });
 
+test("version --json --output-file writes JSON envelope to file and does not print envelope to stdout", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  const outputPath = path.join(repoRoot, "dockship-output.json");
+
+  const result = runNodeScript(CLI_PATH, ["version", "--json", "--output-file", outputPath], { cwd: repoRoot });
+
+  assert.equal(result.status, 0, result.stderr || "Expected version --json --output-file command to succeed");
+  assert.equal(result.stdout.trim(), "", "Expected no JSON envelope on stdout when --output-file is used");
+
+  const payload = JSON.parse(fs.readFileSync(outputPath, "utf8"));
+
+  assert.equal(payload.command, "version");
+  assert.equal(payload.outputMode, "json");
+  assert.equal(payload.success, true);
+});
+
 test("tags command supports --output json envelope", t => {
   const repoRoot = createTempRepo(t);
 
