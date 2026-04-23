@@ -1459,12 +1459,13 @@ function applySemanticTagFormatting(baseTag, options = {}) {
   let prefix = getString(options.prefix);
   let suffix = getString(options.suffix);
   const versionSuffix = getString(options.versionSuffix);
+  const stripVersionSuffix = options.stripVersionSuffix === true;
   const maxLength = normalizePositiveInt(options.maxLength, 0);
   let nonPublicPrefix = getString(options.nonPublicPrefix);
   const applyNonPublicPrefix = options.applyNonPublicPrefix === true;
   let formatted = `${baseTag}`;
 
-  if (tagMode === TAG_TRANSFORM_MODE_REPLACE && versionSuffix && formatted.endsWith(versionSuffix)) {
+  if (stripVersionSuffix && tagMode === TAG_TRANSFORM_MODE_REPLACE && versionSuffix && formatted.endsWith(versionSuffix)) {
     formatted = formatted.slice(0, -versionSuffix.length);
   }
 
@@ -1559,7 +1560,8 @@ function computeRuleTagTransform(rule, aliasPolicy, branch, captures, sanitizeMo
       captures
     ),
     sanitizeMode,
-    tagMode: normalizeTagTransformMode(rule.tagMode, TAG_TRANSFORM_MODE_REPLACE)
+    tagMode: normalizeTagTransformMode(rule.tagMode, TAG_TRANSFORM_MODE_REPLACE),
+    stripVersionSuffix: Boolean(rule.matchVersion)
   };
 }
 
@@ -1969,7 +1971,8 @@ function getTagComputation(version, settings) {
         applyNonPublicPrefix: !buildType.isPublic,
         sanitize: transform.sanitizeMode || ALIAS_SANITIZE_NONE,
         tagMode: transform.tagMode,
-        versionSuffix: getString(version.suffix)
+        versionSuffix: getString(version.suffix),
+        stripVersionSuffix: transform.stripVersionSuffix
       })
       : tag;
 
