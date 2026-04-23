@@ -1108,6 +1108,46 @@ function getBranchPatternMatcher(pattern, options = {}) {
   };
 }
 
+function getPatternMatcher(pattern, options = {}) {
+  return getBranchPatternMatcher(pattern, options);
+}
+
+function matchPatternWithDetails(value, pattern, options = {}) {
+  const entry = getPatternMatcher(pattern, options);
+  const text = getString(value);
+
+  if (!text || !entry.valid || !entry.matcher) {
+    return {
+      pattern: entry.raw,
+      type: entry.type,
+      valid: entry.valid,
+      matched: false,
+      captures: {
+        values: [],
+        $0: EMPTY_STRING
+      }
+    };
+  }
+
+  entry.matcher.lastIndex = 0;
+  const match = entry.matcher.exec(text);
+
+  return {
+    pattern: entry.raw,
+    type: entry.type,
+    valid: entry.valid,
+    matched: Boolean(match),
+    captures: {
+      values: match ? match.slice(1) : [],
+      $0: match ? getString(match[0]) : EMPTY_STRING
+    }
+  };
+}
+
+function matchBranchPatternWithDetails(branch, pattern, options = {}) {
+  return matchPatternWithDetails(branch, pattern, options);
+}
+
 function evaluateBranchPatterns(branch, patterns) {
   const branchName = getString(branch);
   const normalizedPatterns = getStringArray(patterns, []);
@@ -1329,9 +1369,11 @@ function normalizeAliasRule(rawRule, index) {
     return null;
   }
 
-  const match = getString(rawRule.match);
+  const rawMatch = rawRule.match;
+  const matchBranch = getString(rawRule.matchBranch || (typeof rawMatch === "object" ? rawMatch.branch : rawMatch));
+  const matchVersion = getString(rawRule.matchVersion || (typeof rawMatch === "object" ? rawMatch.version : EMPTY_STRING));
 
-  if (!match) {
+  if (!matchBranch && !matchVersion) {
     return null;
   }
 
@@ -1341,7 +1383,9 @@ function normalizeAliasRule(rawRule, index) {
 
   return {
     id: getString(rawRule.id, `rule-${index + 1}`),
-    match,
+    match: rawMatch,
+    matchBranch,
+    matchVersion,
     caseInsensitive: normalizeBool(rawRule.caseInsensitive, false),
     template: getString(rawRule.template),
     aliases,
@@ -1414,10 +1458,15 @@ function applySemanticTagFormatting(baseTag, options = {}) {
   const tagMode = normalizeTagTransformMode(options.tagMode, TAG_TRANSFORM_MODE_REPLACE);
   let prefix = getString(options.prefix);
   let suffix = getString(options.suffix);
+  const versionSuffix = getString(options.versionSuffix);
   const maxLength = normalizePositiveInt(options.maxLength, 0);
   let nonPublicPrefix = getString(options.nonPublicPrefix);
   const applyNonPublicPrefix = options.applyNonPublicPrefix === true;
   let formatted = `${baseTag}`;
+
+  if (tagMode === TAG_TRANSFORM_MODE_REPLACE && versionSuffix && formatted.endsWith(versionSuffix)) {
+    formatted = formatted.slice(0, -versionSuffix.length);
+  }
 
   if (sanitizeMode !== ALIAS_SANITIZE_NONE) {
     prefix = applyAliasSanitizeFragment(prefix, sanitizeMode);
@@ -1460,7 +1509,7 @@ function resolveAliasRuleSanitizeMode(rule, defaultSanitizeMode) {
   return defaultSanitizeMode;
 }
 
-function resolveAliasRuleTransformSanitizeMode(rule) {
+function resolveAliasRuleTransformSanitizeMode(rule, defaultSanitizeMode) {
   if (rule && typeof rule.sanitize === "boolean") {
     return rule.sanitize ? ALIAS_SANITIZE_SANITIZED : ALIAS_SANITIZE_NONE;
   }
@@ -1468,10 +1517,10 @@ function resolveAliasRuleTransformSanitizeMode(rule) {
   const ruleSanitize = getString(rule && rule.sanitize);
 
   if (ruleSanitize) {
-    return normalizeAliasSanitizeMode(ruleSanitize, ALIAS_SANITIZE_NONE);
+    return normalizeAliasSanitizeMode(ruleSanitize, defaultSanitizeMode);
   }
 
-  return ALIAS_SANITIZE_NONE;
+  return defaultSanitizeMode;
 }
 
 function getAliasPolicy(settings, buildType) {
@@ -1510,20 +1559,44 @@ function computeRuleTagTransform(rule, aliasPolicy, branch, captures, sanitizeMo
       captures
     ),
     sanitizeMode,
-    tagMode: rule.tagMode || TAG_TRANSFORM_MODE_APPEND
+    tagMode: normalizeTagTransformMode(rule.tagMode, TAG_TRANSFORM_MODE_REPLACE)
   };
 }
 
-function selectAliasRule(branch, rules, aliasPolicy) {
+function selectAliasRule(branch, version, rules, aliasPolicy) {
   const evaluations = [];
   let selectedRuleId = NULL_VALUE;
 
   for (const rule of rules) {
-    const matchResult = matchBranchPatternWithDetails(branch, rule.match, {
-      caseInsensitive: rule.caseInsensitive
-    });
+    const branchMatchResult = rule.matchBranch
+      ? matchBranchPatternWithDetails(branch, rule.matchBranch, { caseInsensitive: rule.caseInsensitive })
+      : {
+        pattern: EMPTY_STRING,
+        type: PATTERN_TYPE_WILDCARD,
+        valid: true,
+        matched: true,
+        captures: { values: [], $0: EMPTY_STRING }
+      };
+
+    const versionMatchResult = rule.matchVersion
+      ? matchPatternWithDetails(version, rule.matchVersion, { caseInsensitive: rule.caseInsensitive })
+      : {
+        pattern: EMPTY_STRING,
+        type: PATTERN_TYPE_WILDCARD,
+        valid: true,
+        matched: true,
+        captures: { values: [], $0: EMPTY_STRING }
+      };
+
+    const matchResult = {
+      branch: branchMatchResult,
+      version: versionMatchResult,
+      captures: branchMatchResult.matched ? branchMatchResult.captures : versionMatchResult.captures,
+      matched: branchMatchResult.matched && versionMatchResult.matched,
+      valid: branchMatchResult.valid && versionMatchResult.valid
+    };
     const sanitizeMode = resolveAliasRuleSanitizeMode(rule, aliasPolicy.defaultSanitizeMode);
-    const transformSanitizeMode = resolveAliasRuleTransformSanitizeMode(rule);
+    const transformSanitizeMode = resolveAliasRuleTransformSanitizeMode(rule, aliasPolicy.defaultSanitizeMode);
     const tagTransform = computeRuleTagTransform(rule, aliasPolicy, branch, matchResult.captures, transformSanitizeMode);
 
     if (matchResult.matched && selectedRuleId === NULL_VALUE) {
@@ -1618,26 +1691,33 @@ function getAliasComputation(version, settings, buildType) {
     pushUnique(aliases, simpleSanitizedAlias);
   }
 
-  const ruleSelection = selectAliasRule(branch, settings.aliasRules, aliasPolicy);
+  const versionText = getString(version.semVer2) || `${getString(version.version)}${getString(version.suffix)}`;
+  const ruleSelection = selectAliasRule(branch, versionText, settings.aliasRules, aliasPolicy);
   const emittedFromRuleSelection = computeAliasOutputsFromRuleSelection(ruleSelection, aliasPolicy, branch);
   selectedTagTransform = emittedFromRuleSelection.tagTransform || selectedTagTransform;
   emittedFromRuleSelection.aliases.forEach(aliasTag => pushUnique(aliases, aliasTag));
 
-  const ruleTrace = ruleSelection.evaluations.map(item => ({
-    id: item.rule.id,
-    match: item.rule.match,
-    caseInsensitive: item.rule.caseInsensitive,
-    type: item.matchResult.type,
-    valid: item.matchResult.valid,
-    matched: item.matchResult.matched,
-    selected: item.selected,
-    captures: item.matchResult.captures.values,
-    matchValue: item.matchResult.captures.$0,
-    baseCandidates: item.baseCandidates,
-    aliases: item.aliases,
-    sanitizeMode: item.sanitizeMode,
-    tagTransform: item.tagTransform
-  }));
+  const ruleTrace = ruleSelection.evaluations.map(item => {
+    const useBranchMatch = Boolean(item.rule.matchBranch);
+    const matchValue = useBranchMatch ? item.matchResult.branch.captures.$0 : item.matchResult.version.captures.$0;
+    const matchType = useBranchMatch ? item.matchResult.branch.type : item.matchResult.version.type;
+
+    return {
+      id: item.rule.id,
+      match: item.rule.match,
+      caseInsensitive: item.rule.caseInsensitive,
+      type: matchType,
+      valid: item.matchResult.valid,
+      matched: item.matchResult.matched,
+      selected: item.selected,
+      captures: item.matchResult.captures.values,
+      matchValue,
+      baseCandidates: item.baseCandidates,
+      aliases: item.aliases,
+      sanitizeMode: item.sanitizeMode,
+      tagTransform: item.tagTransform
+    };
+  });
 
   return {
     enabled: settings.aliasPolicyEnabled,
@@ -1888,7 +1968,8 @@ function getTagComputation(version, settings) {
         nonPublicPrefix: transform.nonPublicPrefix,
         applyNonPublicPrefix: !buildType.isPublic,
         sanitize: transform.sanitizeMode || ALIAS_SANITIZE_NONE,
-        tagMode: transform.tagMode
+        tagMode: transform.tagMode,
+        versionSuffix: getString(version.suffix)
       })
       : tag;
 
