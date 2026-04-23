@@ -19,6 +19,7 @@ Source repository: [github.com/agile-north/dockship](https://github.com/agile-no
 
 - **Semantic versioning** from multiple sources (Node.js, .NET, NBGV, custom providers)
 - **Multi-tag Docker builds** (version, major, major.minor, optional latest)
+- **Prerelease-aware tags**: `major` and `major.minor` tags preserve prerelease suffixes when present (`1.2.3-beta.1` → `1-beta.1`, `1.2-beta.1`)
 - **Registry push** with consistent tagging strategy
 - **Polyglot support** – Node.js, C#/.NET, NBGV, and extensible to any language
 - **Git-height versioning** – automatic build number from commit count
