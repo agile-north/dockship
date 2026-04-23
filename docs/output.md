@@ -343,7 +343,9 @@ Pattern matching notes:
 - regex patterns are supported using `regex:` prefix, for example `regex:^release\/\d+\.\d+$`
 - invalid regex patterns are reported under `branchMatching.*.invalidPatterns`
 - alias rule evaluation trace (including non-matches) is reported under `plan.aliasPolicy.rules`
-- alias rule templates support `$BRANCH`, `$BRANCH_SANITIZED`, and regex captures `$1..$9`
+- alias rules are case-sensitive by default and may opt into case-insensitive matching with `caseInsensitive: true`
+- alias rule templates support `$BRANCH`, `$BRANCH_SANITIZED`, `$0` (entire matched value), and regex captures `$1..$9`
+- rules that only use `tagPrefix`/`tagSuffix`/`tagMaxLength`/`tagNonPublicPrefix` rewrite semantic version tags without emitting branch aliases
 
 ---
 
