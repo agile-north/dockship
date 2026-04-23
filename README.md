@@ -423,15 +423,22 @@ Global alias formatting options:
 - `suffix`: append to all generated aliases
 - `maxLength`: deterministic truncation (`0` means unlimited)
 
-Rule-based aliases (`docker.aliases.rules`) are evaluated in order with first-match-wins selection. A matching rule can either emit additional alias tags from `template`/`alias`/`aliases`, or it can transform the base semantic tags when the `tag*` fields are set.
+Rule-based aliases (`docker.aliases.rules`) are evaluated in order with first-match-wins selection. A matching rule can either emit additional alias tags from `template`/`alias`/`aliases`, transform the generated semantic tags with `tag*` settings, or both.
+
+Important behavior:
+
+- If a rule only provides `tagPrefix`/`tagSuffix`/`tagMaxLength`/`tagNonPublicPrefix`, it rewrites semantic tags but does not emit a branch alias by itself.
+- If a rule provides `template`/`alias`/`aliases`, it emits alias tags in addition to any semantic tag transform.
+- `caseInsensitive` controls rule matching behavior and does not affect emitted tag formatting.
 
 Rule shape:
 
 - `id`: stable identifier for plan trace output
 - `match`: wildcard (`*`) or regex (`regex:` prefix)
-- `template`: supports `$BRANCH`, `$BRANCH_SANITIZED`, and capture references `$1..$9`
+- `caseInsensitive`: optional boolean to evaluate this rule case-insensitively
+- `template`: supports `$BRANCH`, `$BRANCH_SANITIZED`, `$0` (entire matched value), and capture references `$1..$9`
 - `alias`/`aliases`: static alias values
-- `sanitize`: `none`, `branch`, or `sanitized`
+- `sanitize`: `none`, `branch`, `sanitized`, or boolean (`true` => `sanitized`, `false` => `none`)
 - `prefix`/`suffix`/`maxLength`/`nonPublicPrefix`: optional per-rule alias formatting overrides
 - `tagPrefix`/`tagSuffix`/`tagMaxLength`/`tagNonPublicPrefix`: optional per-rule semantic tag transforms that rewrite the generated semantic tags
 
@@ -439,7 +446,52 @@ Template tokens:
 
 - `$BRANCH`: raw normalized branch name
 - `$BRANCH_SANITIZED`: lowercase sanitized branch name
+- `$0`: entire matched value for wildcard/plain/regex patterns
 - `$1..$9`: regex capture groups from the matching rule pattern
+
+Matching behavior:
+
+- alias rules are case-sensitive by default
+- set `caseInsensitive: true` on a rule to match wildcard/regex patterns without case sensitivity
+
+Examples:
+
+- Transform-only rule:
+
+```json
+{
+  "match": "topic/*",
+  "tagSuffix": "-$0",
+  "sanitize": true
+}
+```
+
+This rewrites semantic tags to `1.2.3-topic-auth` and does not emit a separate branch alias.
+
+- Alias-emitting rule:
+
+```json
+{
+  "match": "release/*",
+  "template": "release-$0",
+  "sanitize": false
+}
+```
+
+This emits `release-release/1.2` as an alias (or sanitized form if `sanitize` is enabled).
+
+- Case-insensitive match:
+
+```json
+{
+  "match": "Topic/*",
+  "caseInsensitive": true,
+  "template": "lane-$0",
+  "sanitize": true
+}
+```
+
+This matches `topic/Auth_Branch` as well as `Topic/Auth_Branch`.
 
 Example alias config:
 

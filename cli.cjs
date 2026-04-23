@@ -889,8 +889,28 @@ function escapeRegex(text) {
   return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function branchPatternToRegex(pattern) {
-  return new RegExp(`^${escapeRegex(pattern).replace(/\\\*/g, ".*")}$`);
+function normalizeRegexFlags(flags, caseInsensitive = false) {
+  const input = getString(flags).toLowerCase();
+  const entries = [];
+
+  input.split(EMPTY_STRING).forEach(flag => {
+    if (!flag || entries.includes(flag)) {
+      return;
+    }
+
+    entries.push(flag);
+  });
+
+  if (caseInsensitive && !entries.includes("i")) {
+    entries.push("i");
+  }
+
+  return entries.join(EMPTY_STRING);
+}
+
+function branchPatternToRegex(pattern, options = {}) {
+  const flags = normalizeRegexFlags(EMPTY_STRING, options.caseInsensitive === true);
+  return new RegExp(`^${escapeRegex(pattern).replace(/\\\*/g, ".*")}$`, flags);
 }
 
 function parseRegexPattern(rawPattern) {
@@ -921,8 +941,9 @@ function parseRegexPattern(rawPattern) {
   };
 }
 
-function getBranchPatternMatcher(pattern) {
+function getBranchPatternMatcher(pattern, options = {}) {
   const raw = getString(pattern);
+  const caseInsensitive = options.caseInsensitive === true;
   const regexParts = parseRegexPattern(raw);
 
   if (regexParts) {
@@ -930,7 +951,7 @@ function getBranchPatternMatcher(pattern) {
       return {
         type: PATTERN_TYPE_REGEX,
         raw,
-        matcher: new RegExp(regexParts.pattern, regexParts.flags),
+        matcher: new RegExp(regexParts.pattern, normalizeRegexFlags(regexParts.flags, caseInsensitive)),
         valid: true
       };
     } catch {
@@ -946,7 +967,7 @@ function getBranchPatternMatcher(pattern) {
   return {
     type: PATTERN_TYPE_WILDCARD,
     raw,
-    matcher: branchPatternToRegex(raw),
+    matcher: branchPatternToRegex(raw, { caseInsensitive }),
     valid: true
   };
 }
@@ -1065,6 +1086,14 @@ function expandAliasTemplate(template, branch, captures = []) {
 
   const branchRaw = getString(branch);
   const branchSanitized = normalizeBranchAlias(branchRaw, { lowercase: true });
+  const captureValues = Array.isArray(captures)
+    ? captures
+    : (captures && Array.isArray(captures.values) ? captures.values : []);
+  const matchedValue = getString(
+    Array.isArray(captures)
+      ? branchRaw
+      : (captures && captures.$0 ? captures.$0 : branchRaw)
+  );
 
   expanded = expanded
     .split(TEMPLATE_TOKEN_BRANCH_SANITIZED)
@@ -1072,7 +1101,9 @@ function expandAliasTemplate(template, branch, captures = []) {
     .split(TEMPLATE_TOKEN_BRANCH)
     .join(branchRaw);
 
-  captures.forEach((capture, index) => {
+  expanded = expanded.split("$0").join(matchedValue);
+
+  captureValues.forEach((capture, index) => {
     const token = `$${index + 1}`;
     expanded = expanded.split(token).join(getString(capture));
   });
@@ -1080,8 +1111,8 @@ function expandAliasTemplate(template, branch, captures = []) {
   return expanded;
 }
 
-function matchBranchPatternWithDetails(branch, pattern) {
-  const entry = getBranchPatternMatcher(pattern);
+function matchBranchPatternWithDetails(branch, pattern, options = {}) {
+  const entry = getBranchPatternMatcher(pattern, options);
   const branchValue = getString(branch);
 
   if (!branchValue || !entry.valid || !entry.matcher) {
@@ -1090,7 +1121,10 @@ function matchBranchPatternWithDetails(branch, pattern) {
       type: entry.type,
       valid: entry.valid,
       matched: false,
-      captures: []
+      captures: {
+        values: [],
+        $0: EMPTY_STRING
+      }
     };
   }
 
@@ -1102,7 +1136,10 @@ function matchBranchPatternWithDetails(branch, pattern) {
     type: entry.type,
     valid: entry.valid,
     matched: Boolean(match),
-    captures: match ? match.slice(1) : []
+    captures: {
+      values: match ? match.slice(1) : [],
+      $0: match ? getString(match[0]) : EMPTY_STRING
+    }
   };
 }
 
@@ -1124,11 +1161,12 @@ function normalizeAliasRule(rawRule, index) {
   return {
     id: getString(rawRule.id, `rule-${index + 1}`),
     match,
+    caseInsensitive: normalizeBool(rawRule.caseInsensitive, false),
     template: getString(rawRule.template),
     aliases,
     prefix: getString(rawRule.prefix),
     suffix: getString(rawRule.suffix),
-    sanitize: normalizeAliasSanitizeMode(rawRule.sanitize, ALIAS_SANITIZE_SANITIZED),
+    sanitize: rawRule.sanitize,
     maxLength: normalizePositiveInt(rawRule.maxLength, 0),
     nonPublicPrefix: getString(rawRule.nonPublicPrefix),
     tagPrefix: getString(rawRule.tagPrefix),
@@ -1179,105 +1217,194 @@ function applyAliasFormatting(baseAlias, options = {}) {
   return truncateDeterministic(formatted, maxLength);
 }
 
+function resolveAliasDefaultSanitizeMode(settings) {
+  return settings.aliasSanitize ? ALIAS_SANITIZE_SANITIZED : ALIAS_SANITIZE_NONE;
+}
+
+function resolveAliasRuleSanitizeMode(rule, defaultSanitizeMode) {
+  if (rule && typeof rule.sanitize === "boolean") {
+    return rule.sanitize ? ALIAS_SANITIZE_SANITIZED : ALIAS_SANITIZE_NONE;
+  }
+
+  const ruleSanitize = getString(rule && rule.sanitize);
+
+  if (ruleSanitize) {
+    return normalizeAliasSanitizeMode(ruleSanitize, defaultSanitizeMode);
+  }
+
+  return defaultSanitizeMode;
+}
+
+function getAliasPolicy(settings, buildType) {
+  const isPublicBuild = buildType ? buildType.isPublic : true;
+  const applyNonPublicPrefix = !isPublicBuild;
+
+  return {
+    emitBranchAlias: settings.aliasBranch,
+    emitSanitizedBranchAlias: settings.aliasSanitizedBranch,
+    defaultSanitizeMode: resolveAliasDefaultSanitizeMode(settings),
+    globalFormatting: {
+      prefix: settings.aliasPrefix,
+      suffix: settings.aliasSuffix,
+      maxLength: settings.aliasMaxLength,
+      nonPublicPrefix: settings.aliasNonPublicPrefix,
+      applyNonPublicPrefix
+    },
+    nonPublicPrefixApplied: applyNonPublicPrefix && Boolean(settings.aliasNonPublicPrefix)
+  };
+}
+
+function computeRuleTagTransform(rule, aliasPolicy, branch, captures) {
+  return {
+    enabled: Boolean(
+      getString(rule.tagPrefix) ||
+      getString(rule.tagSuffix) ||
+      rule.tagMaxLength > 0 ||
+      getString(rule.tagNonPublicPrefix)
+    ),
+    prefix: expandAliasTemplate(getString(rule.tagPrefix), branch, captures),
+    suffix: expandAliasTemplate(getString(rule.tagSuffix), branch, captures),
+    maxLength: rule.tagMaxLength > 0 ? rule.tagMaxLength : aliasPolicy.globalFormatting.maxLength,
+    nonPublicPrefix: expandAliasTemplate(
+      getString(rule.tagNonPublicPrefix) || aliasPolicy.globalFormatting.nonPublicPrefix,
+      branch,
+      captures
+    )
+  };
+}
+
+function selectAliasRule(branch, rules, aliasPolicy) {
+  const evaluations = [];
+  let selectedRuleId = NULL_VALUE;
+
+  for (const rule of rules) {
+    const matchResult = matchBranchPatternWithDetails(branch, rule.match, {
+      caseInsensitive: rule.caseInsensitive
+    });
+    const sanitizeMode = resolveAliasRuleSanitizeMode(rule, aliasPolicy.defaultSanitizeMode);
+    const tagTransform = computeRuleTagTransform(rule, aliasPolicy, branch, matchResult.captures);
+
+    if (matchResult.matched && selectedRuleId === NULL_VALUE) {
+      selectedRuleId = rule.id;
+    }
+
+    evaluations.push({
+      rule,
+      matchResult,
+      sanitizeMode,
+      tagTransform,
+      selected: false,
+      baseCandidates: [],
+      aliases: []
+    });
+  }
+
+  const selected = evaluations.find(item => item.rule.id === selectedRuleId) || null;
+
+  if (selected) {
+    selected.selected = true;
+  }
+
+  return {
+    selectedRuleId,
+    selected,
+    evaluations
+  };
+}
+
+function computeAliasOutputsFromRuleSelection(selection, aliasPolicy, branch) {
+  if (!selection || !selection.selected) {
+    return {
+      aliases: [],
+      tagTransform: null
+    };
+  }
+
+  const selected = selection.selected;
+  const rule = selected.rule;
+  const captures = selected.matchResult.captures;
+  const baseCandidates = [];
+  const aliases = [];
+
+  if (rule.template) {
+    pushUnique(baseCandidates, expandAliasTemplate(rule.template, branch, captures));
+  }
+
+  rule.aliases.forEach(value => pushUnique(baseCandidates, value));
+
+  baseCandidates.forEach(candidate => {
+    const formatted = applyAliasFormatting(candidate, {
+      ...aliasPolicy.globalFormatting,
+      prefix: `${getString(rule.prefix)}${aliasPolicy.globalFormatting.prefix}`,
+      suffix: `${aliasPolicy.globalFormatting.suffix}${getString(rule.suffix)}`,
+      maxLength: rule.maxLength > 0 ? rule.maxLength : aliasPolicy.globalFormatting.maxLength,
+      nonPublicPrefix: getString(rule.nonPublicPrefix) || aliasPolicy.globalFormatting.nonPublicPrefix,
+      sanitize: selected.sanitizeMode
+    });
+    pushUnique(aliases, formatted);
+  });
+
+  selected.baseCandidates = baseCandidates;
+  selected.aliases = aliases;
+
+  return {
+    aliases,
+    tagTransform: selected.tagTransform.enabled ? selected.tagTransform : null
+  };
+}
+
 function getAliasComputation(version, settings, buildType) {
   const branch = getString(settings.currentBranch);
   const isPublicBuild = buildType ? buildType.isPublic : evaluateBuildType(version, settings).isPublic;
-  const applyNonPublicPrefix = !isPublicBuild;
+  const aliasPolicy = getAliasPolicy(settings, { isPublic: isPublicBuild });
   const aliases = [];
-  const ruleTrace = [];
-  let selectedRuleId = NULL_VALUE;
   let selectedTagTransform = null;
 
-  const globalFormatting = {
-    prefix: settings.aliasPrefix,
-    suffix: settings.aliasSuffix,
-    maxLength: settings.aliasMaxLength,
-    nonPublicPrefix: settings.aliasNonPublicPrefix,
-    applyNonPublicPrefix
-  };
-
-  if (settings.aliasBranch) {
+  if (aliasPolicy.emitBranchAlias) {
     const simpleAlias = applyAliasFormatting(normalizeBranchAlias(branch), {
-      ...globalFormatting,
-      sanitize: settings.aliasSanitize ? ALIAS_SANITIZE_SANITIZED : ALIAS_SANITIZE_NONE
+      ...aliasPolicy.globalFormatting,
+      sanitize: aliasPolicy.defaultSanitizeMode
     });
     pushUnique(aliases, simpleAlias);
   }
 
-  if (settings.aliasSanitizedBranch) {
+  if (aliasPolicy.emitSanitizedBranchAlias) {
     const simpleSanitizedAlias = applyAliasFormatting(normalizeBranchAlias(branch, { lowercase: true }), {
-      ...globalFormatting,
+      ...aliasPolicy.globalFormatting,
       sanitize: ALIAS_SANITIZE_NONE
     });
     pushUnique(aliases, simpleSanitizedAlias);
   }
 
-  for (const rule of settings.aliasRules) {
-    const matchResult = matchBranchPatternWithDetails(branch, rule.match);
-    const ruleBaseCandidates = [];
-    const ruleAliases = [];
-    const ruleTagTransform = {
-      enabled: Boolean(
-        getString(rule.tagPrefix) ||
-        getString(rule.tagSuffix) ||
-        rule.tagMaxLength > 0 ||
-        getString(rule.tagNonPublicPrefix)
-      ),
-      prefix: expandAliasTemplate(getString(rule.tagPrefix), branch, matchResult.captures),
-      suffix: expandAliasTemplate(getString(rule.tagSuffix), branch, matchResult.captures),
-      maxLength: rule.tagMaxLength > 0 ? rule.tagMaxLength : globalFormatting.maxLength,
-      nonPublicPrefix: expandAliasTemplate(
-        getString(rule.tagNonPublicPrefix) || globalFormatting.nonPublicPrefix,
-        branch,
-        matchResult.captures
-      )
-    };
+  const ruleSelection = selectAliasRule(branch, settings.aliasRules, aliasPolicy);
+  const emittedFromRuleSelection = computeAliasOutputsFromRuleSelection(ruleSelection, aliasPolicy, branch);
+  selectedTagTransform = emittedFromRuleSelection.tagTransform || selectedTagTransform;
+  emittedFromRuleSelection.aliases.forEach(aliasTag => pushUnique(aliases, aliasTag));
 
-    if (matchResult.matched && selectedRuleId === NULL_VALUE) {
-      selectedRuleId = rule.id;
-      selectedTagTransform = ruleTagTransform.enabled ? ruleTagTransform : selectedTagTransform;
-
-      if (rule.template) {
-        pushUnique(ruleBaseCandidates, expandAliasTemplate(rule.template, branch, matchResult.captures));
-      }
-
-      rule.aliases.forEach(value => pushUnique(ruleBaseCandidates, value));
-
-      ruleBaseCandidates.forEach(candidate => {
-        const formatted = applyAliasFormatting(candidate, {
-          ...globalFormatting,
-          prefix: `${getString(rule.prefix)}${globalFormatting.prefix}`,
-          suffix: `${globalFormatting.suffix}${getString(rule.suffix)}`,
-          maxLength: rule.maxLength > 0 ? rule.maxLength : globalFormatting.maxLength,
-          nonPublicPrefix: getString(rule.nonPublicPrefix) || globalFormatting.nonPublicPrefix,
-          sanitize: rule.sanitize
-        });
-        pushUnique(ruleAliases, formatted);
-        pushUnique(aliases, formatted);
-      });
-    }
-
-    ruleTrace.push({
-      id: rule.id,
-      match: rule.match,
-      type: matchResult.type,
-      valid: matchResult.valid,
-      matched: matchResult.matched,
-      selected: selectedRuleId === rule.id,
-      captures: matchResult.captures,
-      baseCandidates: ruleBaseCandidates,
-      aliases: ruleAliases,
-      tagTransform: ruleTagTransform
-    });
-  }
+  const ruleTrace = ruleSelection.evaluations.map(item => ({
+    id: item.rule.id,
+    match: item.rule.match,
+    caseInsensitive: item.rule.caseInsensitive,
+    type: item.matchResult.type,
+    valid: item.matchResult.valid,
+    matched: item.matchResult.matched,
+    selected: item.selected,
+    captures: item.matchResult.captures.values,
+    matchValue: item.matchResult.captures.$0,
+    baseCandidates: item.baseCandidates,
+    aliases: item.aliases,
+    sanitizeMode: item.sanitizeMode,
+    tagTransform: item.tagTransform
+  }));
 
   return {
     enabled: settings.aliasPolicyEnabled,
     aliases,
     selectionMode: ALIAS_RULE_SELECTION_MODE,
-    selectedRuleId,
+    selectedRuleId: ruleSelection.selectedRuleId,
     tagTransform: selectedTagTransform,
-    nonPublicPrefixApplied: applyNonPublicPrefix && Boolean(settings.aliasNonPublicPrefix),
+    defaultSanitizeMode: aliasPolicy.defaultSanitizeMode,
+    nonPublicPrefixApplied: aliasPolicy.nonPublicPrefixApplied,
     globalFormatting: {
       prefix: settings.aliasPrefix,
       suffix: settings.aliasSuffix,
@@ -2004,6 +2131,7 @@ function buildPlanResult(version, settings) {
         aliases: {
           branch: settings.aliasBranch,
           sanitizedBranch: settings.aliasSanitizedBranch,
+          sanitize: settings.aliasSanitize,
           prefix: settings.aliasPrefix,
           suffix: settings.aliasSuffix,
           maxLength: settings.aliasMaxLength,
@@ -2031,6 +2159,7 @@ function buildPlanResult(version, settings) {
         selectionMode: tagComputation.aliasComputation.selectionMode,
         selectedRuleId: tagComputation.aliasComputation.selectedRuleId,
         nonPublicPrefixApplied: tagComputation.aliasComputation.nonPublicPrefixApplied,
+        defaultSanitizeMode: tagComputation.aliasComputation.defaultSanitizeMode,
         globalFormatting: tagComputation.aliasComputation.globalFormatting,
         rules: tagComputation.aliasComputation.rules
       },

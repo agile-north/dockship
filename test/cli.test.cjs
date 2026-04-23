@@ -343,6 +343,138 @@ test("tags command expands regex capture tokens in semantic tag transforms", t =
   assert.ok(!tags.includes("topic-auth"));
 });
 
+test("tags command supports $0 token for wildcard rule templates", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "1.2.3");
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      aliases: {
+        sanitize: true,
+        rules: [
+          {
+            id: "topic-lane",
+            match: "topic/*",
+            template: "lane-$0"
+          }
+        ]
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["tags"], {
+    env: {
+      GITHUB_REF_NAME: "topic/Auth_Branch"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected tags command to succeed");
+  const tags = JSON.parse(result.stdout);
+
+  assert.ok(tags.includes("lane-topic-auth-branch"));
+});
+
+test("tags command allows boolean sanitize override per alias rule", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "1.2.3");
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      aliases: {
+        sanitize: false,
+        rules: [
+          {
+            id: "topic-lane",
+            match: "topic/*",
+            template: "lane-$0",
+            sanitize: true
+          }
+        ]
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["tags"], {
+    env: {
+      GITHUB_REF_NAME: "topic/Auth_Branch"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected tags command to succeed");
+  const tags = JSON.parse(result.stdout);
+
+  assert.ok(tags.includes("lane-topic-auth-branch"));
+  assert.ok(!tags.includes("lane-Topic-Auth_Branch"));
+});
+
+test("tags command supports case-insensitive wildcard alias rules", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "1.2.3");
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      aliases: {
+        rules: [
+          {
+            id: "topic-lane",
+            match: "Topic/*",
+            caseInsensitive: true,
+            template: "lane-$0",
+            sanitize: true
+          }
+        ]
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["tags"], {
+    env: {
+      GITHUB_REF_NAME: "topic/Auth_Branch"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected tags command to succeed");
+  const tags = JSON.parse(result.stdout);
+
+  assert.ok(tags.includes("lane-topic-auth-branch"));
+});
+
+test("tags command supports case-insensitive regex alias rules", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "1.2.3");
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      aliases: {
+        rules: [
+          {
+            id: "release-lane",
+            match: "regex:^RELEASE\\/(.+)$",
+            caseInsensitive: true,
+            template: "lane-$1",
+            sanitize: true
+          }
+        ]
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["tags"], {
+    env: {
+      GITHUB_REF_NAME: "release/Candidate"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected tags command to succeed");
+  const tags = JSON.parse(result.stdout);
+
+  assert.ok(tags.includes("lane-candidate"));
+});
+
 test("plan --json reports branch-aware non-public classification and guardrail tags", t => {
   const repoRoot = createTempRepo(t);
 
