@@ -379,7 +379,7 @@ test("tags command sanitizes transform-only semantic tag suffix output", t => {
   assert.ok(!tags.includes("1.2.3topic-auth"));
 });
 
-test("tags command preserves full version suffix when full version is separate from semver suffix", t => {
+test("tags command strips extra version suffix for branch-only tagMode replace rules", t => {
   const repoRoot = createTempRepo(t);
 
   writeText(path.join(repoRoot, "provider.js"), `module.exports = {
@@ -410,6 +410,7 @@ test("tags command preserves full version suffix when full version is separate f
             id: "topic-suffix-sanitize",
             match: "topic/*",
             tagSuffix: "-$0",
+            tagMode: "replace",
             sanitize: true
           }
         ]
@@ -429,9 +430,10 @@ test("tags command preserves full version suffix when full version is separate f
   assert.equal(result.status, 0, result.stderr || "Expected tags command to succeed");
   const tags = JSON.parse(result.stdout);
 
-  assert.ok(tags.includes("0.0.0.710-g02c6befad2-topic-auth"));
-  assert.ok(tags.includes("0-g02c6befad2-topic-auth"));
-  assert.ok(tags.includes("0.0-g02c6befad2-topic-auth"));
+  assert.ok(tags.includes("0.0.0.710-topic-auth"));
+  assert.ok(tags.includes("0-topic-auth"));
+  assert.ok(tags.includes("0.0-topic-auth"));
+  assert.ok(!tags.includes("0.0.0.710-g02c6befad2-topic-auth"));
 });
 
 test("tags command supports tagMode replace for semantic tag rewrite", t => {

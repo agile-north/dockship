@@ -1459,13 +1459,16 @@ function applySemanticTagFormatting(baseTag, options = {}) {
   let prefix = getString(options.prefix);
   let suffix = getString(options.suffix);
   const versionSuffix = getString(options.versionSuffix);
+  const versionVersion = getString(options.versionVersion);
   const stripVersionSuffix = options.stripVersionSuffix === true;
   const maxLength = normalizePositiveInt(options.maxLength, 0);
   let nonPublicPrefix = getString(options.nonPublicPrefix);
   const applyNonPublicPrefix = options.applyNonPublicPrefix === true;
   let formatted = `${baseTag}`;
 
-  if (stripVersionSuffix && tagMode === TAG_TRANSFORM_MODE_REPLACE && versionSuffix && formatted.endsWith(versionSuffix)) {
+  const shouldStripVersionSuffix = stripVersionSuffix && versionSuffix && tagMode === TAG_TRANSFORM_MODE_REPLACE && !versionVersion.endsWith(versionSuffix);
+
+  if (shouldStripVersionSuffix && formatted.endsWith(versionSuffix)) {
     formatted = formatted.slice(0, -versionSuffix.length);
   }
 
@@ -1544,6 +1547,8 @@ function getAliasPolicy(settings, buildType) {
 }
 
 function computeRuleTagTransform(rule, aliasPolicy, branch, captures, sanitizeMode) {
+  const tagMode = normalizeTagTransformMode(rule.tagMode, TAG_TRANSFORM_MODE_REPLACE);
+
   return {
     enabled: Boolean(
       getString(rule.tagPrefix) ||
@@ -1560,8 +1565,8 @@ function computeRuleTagTransform(rule, aliasPolicy, branch, captures, sanitizeMo
       captures
     ),
     sanitizeMode,
-    tagMode: normalizeTagTransformMode(rule.tagMode, TAG_TRANSFORM_MODE_REPLACE),
-    stripVersionSuffix: Boolean(rule.matchVersion)
+    tagMode,
+    stripVersionSuffix: tagMode === TAG_TRANSFORM_MODE_REPLACE
   };
 }
 
@@ -1972,6 +1977,7 @@ function getTagComputation(version, settings) {
         sanitize: transform.sanitizeMode || ALIAS_SANITIZE_NONE,
         tagMode: transform.tagMode,
         versionSuffix: getString(version.suffix),
+        versionVersion: getString(version.version),
         stripVersionSuffix: transform.stripVersionSuffix
       })
       : tag;
