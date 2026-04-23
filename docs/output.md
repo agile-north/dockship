@@ -206,7 +206,7 @@ Returns computed tags and references.
 
 Tags include semantic tags and optional alias tags based on policy settings. Some alias rules can also rewrite the existing semantic tags themselves using `tagPrefix`, `tagSuffix`, `tagMaxLength`, or `tagNonPublicPrefix`.
 
-The optional `docker.aliases.sanitize` setting controls whether built-in branch aliases and rule-generated alias tags are sanitized after any prefix/suffix formatting is applied. Rule-level `sanitize` behaves the same way for alias tags and does not affect semantic tag transforms created by `tagPrefix` or `tagSuffix`.
+The optional `docker.aliases.sanitize` setting controls whether built-in branch aliases and rule-generated alias tags are sanitized after any prefix/suffix formatting is applied. Rule-level `sanitize` behaves the same way for alias tags, and when explicitly set on a rule it also sanitizes semantic tag transforms created by `tagPrefix` or `tagSuffix`.
 
 ---
 

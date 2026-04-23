@@ -344,6 +344,171 @@ test("tags command expands regex capture tokens in semantic tag transforms", t =
   assert.ok(!tags.includes("topic-auth"));
 });
 
+test("tags command sanitizes transform-only semantic tag suffix output", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "1.2.3");
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      aliases: {
+        rules: [
+          {
+            id: "topic-suffix-sanitize",
+            match: "topic/*",
+            tagSuffix: "-$0",
+            sanitize: true
+          }
+        ]
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["tags"], {
+    env: {
+      GITHUB_REF_NAME: "topic/auth"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected tags command to succeed");
+  const tags = JSON.parse(result.stdout);
+
+  assert.ok(tags.includes("1.2.3-topic-auth"));
+  assert.ok(tags.includes("1-topic-auth"));
+  assert.ok(tags.includes("1.2-topic-auth"));
+  assert.ok(!tags.includes("1.2.3topic-auth"));
+});
+
+test("tags command preserves full version suffix when full version is separate from semver suffix", t => {
+  const repoRoot = createTempRepo(t);
+
+  writeText(path.join(repoRoot, "provider.js"), `module.exports = {
+    resolveVersion() {
+      return {
+        source: "custom",
+        version: "0.0.0.710",
+        full: "0.0.0.710",
+        major: "0",
+        minor: "0",
+        build: "710",
+        suffix: "-g02c6befad2"
+      };
+    }
+  };`);
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    version: {
+      provider: "custom",
+      custom: {
+        providerPackage: "./provider.js"
+      }
+    },
+    docker: {
+      aliases: {
+        rules: [
+          {
+            id: "topic-suffix-sanitize",
+            match: "topic/*",
+            tagSuffix: "-$0",
+            sanitize: true
+          }
+        ]
+      }
+    },
+    git: {
+      nonPublicBranches: ["topic/*"]
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["tags"], {
+    env: {
+      GITHUB_REF_NAME: "topic/auth"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected tags command to succeed");
+  const tags = JSON.parse(result.stdout);
+
+  assert.ok(tags.includes("0.0.0.710-g02c6befad2-topic-auth"));
+  assert.ok(tags.includes("0-g02c6befad2-topic-auth"));
+  assert.ok(tags.includes("0.0-g02c6befad2-topic-auth"));
+});
+
+test("tags command supports tagMode replace for semantic tag rewrite", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "1.2.3");
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      aliases: {
+        rules: [
+          {
+            id: "topic-transform-replace",
+            match: "topic/*",
+            tagPrefix: "release-",
+            tagSuffix: "-$0",
+            tagMode: "replace",
+            sanitize: true
+          }
+        ]
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["tags"], {
+    env: {
+      GITHUB_REF_NAME: "topic/auth"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected tags command to succeed");
+  const tags = JSON.parse(result.stdout);
+
+  assert.ok(tags.includes("release-1.2.3-topic-auth"));
+  assert.ok(tags.includes("release-1-topic-auth"));
+  assert.ok(tags.includes("release-1.2-topic-auth"));
+  assert.ok(!tags.includes("1.2.3-release-topic-auth"));
+  assert.ok(!tags.includes("1-release-topic-auth"));
+  assert.ok(!tags.includes("1.2-release-topic-auth"));
+});
+
+test("tags command supports alias settings under docker.tags.aliases", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "1.2.3");
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      tags: {
+        aliases: {
+          rules: [
+            {
+              id: "topic-suffix",
+              match: "topic/*",
+              tagSuffix: "-$0",
+              sanitize: true
+            }
+          ]
+        }
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["tags"], {
+    env: {
+      GITHUB_REF_NAME: "topic/auth"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected tags command to succeed");
+  const tags = JSON.parse(result.stdout);
+
+  assert.ok(tags.includes("1.2.3-topic-auth"));
+  assert.ok(tags.includes("1-topic-auth"));
+  assert.ok(tags.includes("1.2-topic-auth"));
+});
+
 test("tags command supports $0 token for wildcard rule templates", t => {
   const repoRoot = createTempRepo(t);
 
@@ -513,8 +678,8 @@ test("plan --json reports branch-aware non-public classification and guardrail t
   assert.equal(payload.result.plan.buildType, "non-public");
   assert.equal(payload.result.plan.buildTypeSource, "branch.classification");
   assert.equal(payload.result.plan.nonPublicGuardrailApplied, true);
-  assert.ok(payload.result.artifact.image.tags.includes("1-np"));
-  assert.ok(payload.result.artifact.image.tags.includes("1.2-np"));
+  assert.ok(payload.result.artifact.image.tags.includes("1-pre"));
+  assert.ok(payload.result.artifact.image.tags.includes("1.2-pre"));
   assert.equal(payload.result.plan.push.eligible, false);
   assert.equal(payload.result.plan.push.reason, "branch_not_allowed");
   assert.equal(payload.result.plan.inputs.version.hasSuffix, false);
@@ -740,6 +905,40 @@ test("tags command sanitizes the full alias value after prefix/suffix when alias
   assert.ok(tags.includes("x-lane-topic-auth-branch-y"));
   assert.ok(!tags.includes("X-lane-topic/Auth_Branch-Y"));
   assert.ok(!tags.includes("x-lane-topic/Auth_Branch-y"));
+});
+
+test("tags command sanitizes semantic tag transforms when rule sanitize is true", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "0.0.0.710");
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      aliases: {
+        rules: [
+          {
+            id: "topic-label-suffix",
+            match: "*",
+            sanitize: true,
+            tagSuffix: "-$0"
+          }
+        ]
+      }
+    }
+  });
+
+  const result = runNodeScript(CLI_PATH, ["tags"], {
+    cwd: repoRoot,
+    env: {
+      GITHUB_REF_NAME: "topic/Auth_Branch"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected tags command to succeed");
+  const tags = JSON.parse(result.stdout);
+
+  assert.ok(tags.includes("0.0.0.710-topic-auth-branch"));
+  assert.ok(!tags.includes("0.0.0.710-topic/Auth_Branch"));
 });
 
 test("tags command warns when legacy flat config keys are used", t => {
