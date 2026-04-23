@@ -30,6 +30,15 @@ Legacy flat keys are still supported as compatibility aliases:
 * `docker.pushBranches` → `docker.push.branches`
 * `docker.tagLatest` → `docker.tags.latest`
 
+## [1.12.2](https://github.com/agile-north/dockship/compare/v1.12.1...v1.12.2) (2026-04-23)
+
+
+### Bug Fixes
+
+* document alias rule version matching and support branch/version match conditions ([d9626f8](https://github.com/agile-north/dockship/commit/d9626f8cea51a3da7179f0cbd6fbfde14e0f278f))
+* preserve version suffix for generic replace rules while enabling version-specific suffix replacement ([dc65c35](https://github.com/agile-north/dockship/commit/dc65c350d059f3b7d6feacd47c9212ddb50afc7d))
+* support branch/version alias matching and document matchBranch/matchVersion ([85e2dcd](https://github.com/agile-north/dockship/commit/85e2dcd624141dffc141ab450ad8cd9901db3d9e))
+
 ## [1.12.1](https://github.com/agile-north/dockship/compare/v1.12.0...v1.12.1) (2026-04-23)
 
 
