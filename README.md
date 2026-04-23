@@ -406,7 +406,7 @@ Configuration precedence is:
 | `docker.aliases.suffix` | string | empty | none | Global alias suffix applied after alias generation |
 | `docker.aliases.maxLength` | number | `0` | none | Deterministic max alias length (`0` = unlimited) |
 | `docker.aliases.nonPublicPrefix` | string | empty | none | Optional prefix applied to alias tags when the build is classified non-public. Set to `np-` to prefix non-public aliases (for example `feature-demo` -> `np-feature-demo`) |
-| `docker.aliases.rules` | object[] | `[]` | none | Ordered alias rules, first-match-wins (`match`, `template`, `aliases`, `sanitize`, optional per-rule formatting) |
+| `docker.aliases.rules` | object[] | `[]` | none | Ordered alias rules, first-match-wins (`match`, `matchBranch`, `matchVersion`, `template`, `aliases`, `sanitize`, optional per-rule formatting) |
 | `docker.tags.aliases` | object | none | none | Alternate location for alias settings; merged into `docker.aliases` for compatibility |
 | `docker.cleanup.local` | `auto` \| boolean | `auto` | `DOCKER_CLEANUP_LOCAL` | `auto` cleans up in CI and keeps images locally for dev. `true` always removes built tags after `dock build`/`dock all`; `false` never removes them. |
 | `docker.runner` | `build` \| `buildx` \| `auto` | `build` | `DOCKER_RUNNER` | Selects Docker runner command. `auto` prefers `docker buildx build` and falls back to `docker build` |
@@ -461,7 +461,9 @@ Important behavior:
 Rule shape:
 
 - `id`: stable identifier for plan trace output
-- `match`: wildcard (`*`) or regex (`regex:` prefix)
+- `match`: wildcard (`*`) or regex (`regex:` prefix) pattern against the branch name, or an object with `branch` and `version` entries
+- `matchBranch`: wildcard or regex branch pattern shortcut
+- `matchVersion`: wildcard or regex version pattern shortcut, matched against `semVer2` when available or `version + suffix` otherwise
 - `caseInsensitive`: optional boolean to evaluate this rule case-insensitively
 - `template`: supports `$BRANCH`, `$BRANCH_SANITIZED`, `$0` (entire matched value), and capture references `$1..$9`
 - `alias`/`aliases`: static alias values
@@ -520,6 +522,23 @@ This emits `release-release/1.2` as an alias (or sanitized form if `sanitize` is
 ```
 
 This matches `topic/Auth_Branch` as well as `Topic/Auth_Branch`.
+
+- Branch and version match:
+
+```json
+{
+  "match": {
+    "branch": "topic/*",
+    "version": "*-g*"
+  },
+  "tagPrefix": "release-",
+  "tagSuffix": "-$0",
+  "tagMode": "replace",
+  "sanitize": true
+}
+```
+
+This matches only when both the branch and the resolved version suffix match, letting rules apply specifically to NBGV-style `-g...` versions.
 
 Example alias config:
 
