@@ -173,6 +173,17 @@ test("tags command returns version, major, major.minor, and latest", t => {
   assert.deepEqual(JSON.parse(result.stdout), ["1.2.3", "1", "1.2", "latest"]);
 });
 
+test("tags command preserves prerelease suffixes for major and major.minor tags", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "1.2.3-beta.1");
+
+  const result = runNodeScript(CLI_PATH, ["tags"], { cwd: repoRoot });
+
+  assert.equal(result.status, 0, result.stderr || "Expected cli tags command to succeed");
+  assert.deepEqual(JSON.parse(result.stdout), ["1.2.3-beta.1", "1-beta.1", "1.2-beta.1"]);
+});
+
 test("version command supports --json envelope with patch/build compatibility", t => {
   const repoRoot = createTempRepo(t);
 

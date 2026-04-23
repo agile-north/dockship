@@ -1183,12 +1183,13 @@ function runFallbackBuild(repoRoot, version, config, env, outputMode, options = 
 }
 
 function getTags(version, settings) {
+  const suffix = getString(version.suffix);
   const tags = new Set();
 
   tags.add(version.version);
 
-  if (version.major) tags.add(version.major);
-  if (version.major && version.minor) tags.add(`${version.major}.${version.minor}`);
+  if (version.major) tags.add(`${version.major}${suffix}`);
+  if (version.major && version.minor) tags.add(`${version.major}.${version.minor}${suffix}`);
 
   if (settings.latest) tags.add("latest");
 
