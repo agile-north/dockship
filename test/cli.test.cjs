@@ -30,6 +30,7 @@ const CLI_ENV_KEYS = [
   "DOCKER_LOGIN_USERNAME",
   "DOCKER_LOGIN_PASSWORD",
   "DOCKER_LOGIN_REGISTRY",
+  "DOCKSHIP_STRICT_CONFIG",
   "DOCKER_AUTH_USERNAME",
   "DOCKER_AUTH_PASSWORD",
   "DOCKER_AUTH_REGISTRY",
@@ -786,6 +787,92 @@ test("tags command warns and falls back to defaults when dockship config is inva
   assert.ok(tags.includes("1.2.3"));
   assert.ok(tags.includes("1.2"));
   assert.ok(tags.includes("1"));
+});
+
+test("plan command supports docker.push.branchesShortcut", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "1.2.3");
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      push: {
+        enabled: true,
+        branchesShortcut: "main,release/*"
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["plan", "--json"], {
+    env: {
+      GITHUB_REF_NAME: "release/2.0"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected plan command to succeed");
+
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.result.plan.push.eligible, true);
+});
+
+test("plan command supports git branch shortcut keys for build classification", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "1.2.3");
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    git: {
+      publicBranchesShortcut: "main,release/*",
+      nonPublicBranchesShortcut: "feature/*,hotfix/*"
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["plan", "--json"], {
+    env: {
+      GITHUB_REF_NAME: "feature/auth-flow"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected plan command to succeed");
+
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.result.plan.buildType, "non-public");
+  assert.equal(payload.result.plan.buildTypeSource, "branch.classification");
+});
+
+test("strict config mode fails fast for invalid dockship config JSON", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "1.2.3");
+
+  writeText(path.join(repoRoot, ".dockship", "dockship.json"), "{ invalid json");
+
+  const result = runCliMain(repoRoot, ["tags"], {
+    env: {
+      DOCKSHIP_STRICT_CONFIG: "true"
+    }
+  });
+
+  assert.equal(result.status, 1, "Expected strict config mode to fail on invalid JSON");
+  assert.match(result.stderr, /Strict config mode enabled; failed to parse \.dockship\/dockship\.json\./);
+});
+
+test("strict config mode rejects legacy flat config keys", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "1.2.3");
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    strictConfig: true,
+    docker: {
+      tagLatest: true
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["tags"]);
+
+  assert.equal(result.status, 1, "Expected strict config mode to fail on legacy keys");
+  assert.match(result.stderr, /Strict config mode does not allow legacy config keys: docker\.tagLatest\./);
 });
 
 test("tag command retags from primary reference to computed secondary references", t => {

@@ -138,6 +138,7 @@ Authentication options:
 
 ```json
 {
+  "strictConfig": false,                  // Optional: fail fast on invalid config/legacy keys
   "docker": {
     "file": "Dockerfile",
     "context": ".",
@@ -287,10 +288,12 @@ Keep README focused on onboarding and common usage. Detailed feature contracts l
 
 The config file is optional. If `.dockship/dockship.json` is missing, dockship uses built-in defaults:
 
+- `strictConfig = false`
 - `docker.file = "Dockerfile"`
 - `docker.context = "."`
 - `docker.push.enabled = false`
 - `docker.push.branches = []`
+- `docker.push.branchesShortcut = ""`
 - `docker.push.denyNonPublicPush = false`
 - `docker.tags.latest = false`
 - `docker.tagPolicy.public = ["full", "majorMinor", "major"]`
@@ -303,7 +306,9 @@ The config file is optional. If `.dockship/dockship.json` is missing, dockship u
 - `docker.cleanup.local = "auto"`
 - `docker.runner = "build"`
 - `git.publicBranches = []`
+- `git.publicBranchesShortcut = ""`
 - `git.nonPublicBranches = []`
+- `git.nonPublicBranchesShortcut = ""`
 
 For `dock build`, `dock ship`, and `dock all`, image target settings still need to come from config or env:
 
@@ -319,6 +324,7 @@ Configuration precedence is:
 
 ```json
 {
+  "strictConfig": false,
   "docker": {
     "file": "Dockerfile",                  // Path to Dockerfile
     "context": ".",                        // Build context
@@ -332,6 +338,7 @@ Configuration precedence is:
     "push": {
       "enabled": false,                     // Enable/disable push
       "branches": ["main", "develop"],    // Optional: allowed branches, supports *
+      "branchesShortcut": "main,develop",  // Optional: comma/semicolon/newline-delimited shortcut
       "denyNonPublicPush": false             // Optional: deny pushes for non-public classified builds
     },
     "tags": {
@@ -367,7 +374,9 @@ Configuration precedence is:
   },
   "git": {
     "publicBranches": ["main", "release/*"],
-    "nonPublicBranches": ["feature/*", "hotfix/*"]
+    "publicBranchesShortcut": "main,release/*",
+    "nonPublicBranches": ["feature/*", "hotfix/*"],
+    "nonPublicBranchesShortcut": "feature/*,hotfix/*"
   }
 }
 ```
@@ -376,6 +385,7 @@ Configuration precedence is:
 
 | Setting | Type | Default | Env override | Notes |
 | --- | --- | --- | --- | --- |
+| `strictConfig` | boolean | `false` | `DOCKSHIP_STRICT_CONFIG` | When true, fails fast on invalid `.dockship/dockship.json` and on legacy flat compatibility keys |
 | `docker.file` | string | `Dockerfile` | `DOCKERFILE_PATH` | Path to the Dockerfile relative to the repo root |
 | `docker.context` | string | `.` | `DOCKER_CONTEXT` | Docker build context |
 | `docker.target.registry` | string | empty | `DOCKER_TARGET_REGISTRY` | Required for `dock build`, `dock ship`, and `dock all` |
@@ -383,6 +393,7 @@ Configuration precedence is:
 | `docker.login.registry` | string | empty | `DOCKER_LOGIN_REGISTRY` | Optional login registry override; defaults to `docker.target.registry` |
 | `docker.push.enabled` | boolean | `false` | `DOCKER_PUSH_ENABLED` | Enables pushing for `dock ship` and `dock all` |
 | `docker.push.branches` | string[] | `[]` | `DOCKER_PUSH_BRANCHES` | Branch allow-list; supports `*` wildcards |
+| `docker.push.branchesShortcut` | string | empty | none | Shortcut for push branch allow-list using comma/semicolon/newline delimiters |
 | `docker.push.denyNonPublicPush` | boolean | `false` | none | When `true`, non-public classified builds are not pushed |
 | `docker.tags.latest` | boolean | `false` | `DOCKER_TAG_LATEST` | Adds the `latest` tag in addition to semantic tags |
 | `docker.tagPolicy.public` | string[] | `full,majorMinor,major` | none | Tag kinds for public builds (`full`, `majorMinor`, `major`, `latest`) |
@@ -405,7 +416,9 @@ Configuration precedence is:
 | `docker.stages` | object | `{}` | n/a | Stage definitions for `dock stage <name>` and `dock stage all`. Each stage may set `target`/`output`/`runner` to override `docker.buildTarget`, `docker.buildOutput`, `docker.runner` |
 | `docker.stageFallback` | boolean | `true` | n/a | When true, `dock stage all` runs a final no-target build after configured stages (default). |
 | `git.publicBranches` | string[] | `[]` | n/a | Optional patterns classifying builds as public |
+| `git.publicBranchesShortcut` | string | empty | n/a | Shortcut for public branch patterns using comma/semicolon/newline delimiters |
 | `git.nonPublicBranches` | string[] | `[]` | n/a | Optional patterns classifying builds as non-public |
+| `git.nonPublicBranchesShortcut` | string | empty | n/a | Shortcut for non-public branch patterns using comma/semicolon/newline delimiters |
 
 ### Alias Tags
 
@@ -621,6 +634,8 @@ Legacy flat keys are still accepted for compatibility:
 
 When legacy flat keys are present, dockship emits a warning on stderr and continues using compatibility behavior.
 
+If `strictConfig` (or `DOCKSHIP_STRICT_CONFIG=true`) is enabled, dockship fails instead of warning when legacy flat keys are present.
+
 Non-public guardrail behavior:
 
 - if a build resolves as non-public and the resolved version has no suffix, dockship applies `-np` to generated `major` and `majorMinor` tags
@@ -658,6 +673,7 @@ Environment variable overrides (CI):
 - `DOCKER_TAG_LATEST`
 - `DOCKER_CLEANUP_LOCAL`
 - `DOCKER_RUNNER`
+- `DOCKSHIP_STRICT_CONFIG`
 - `DOCKER_LOGIN_USERNAME`
 - `DOCKER_LOGIN_PASSWORD`
 - `DOCKER_LOGIN_REGISTRY`

@@ -78,6 +78,7 @@ const ENV_DOCKER_STAGES = "DOCKER_STAGES";
 const ENV_DOCKER_LOGIN_USERNAME = "DOCKER_LOGIN_USERNAME";
 const ENV_DOCKER_LOGIN_PASSWORD = "DOCKER_LOGIN_PASSWORD";
 const ENV_DOCKER_LOGIN_REGISTRY = "DOCKER_LOGIN_REGISTRY";
+const ENV_DOCKSHIP_STRICT_CONFIG = "DOCKSHIP_STRICT_CONFIG";
 const LEGACY_ENV_DOCKER_AUTH_USERNAME = "DOCKER_AUTH_USERNAME";
 const LEGACY_ENV_DOCKER_AUTH_PASSWORD = "DOCKER_AUTH_PASSWORD";
 const LEGACY_ENV_DOCKER_AUTH_REGISTRY = "DOCKER_AUTH_REGISTRY";
@@ -181,6 +182,8 @@ const PUSH_SKIP_REASON_BRANCH_NOT_ALLOWED = "branch_not_allowed";
 const PUSH_SKIP_REASON_NON_PUBLIC_DENIED = "non_public_denied";
 
 const WARNING_PREFIX = "Warning:";
+const STRICT_CONFIG_PARSE_ERROR_PREFIX = "Strict config mode enabled; failed to parse";
+const STRICT_CONFIG_LEGACY_ERROR_PREFIX = "Strict config mode does not allow legacy config keys";
 
 const LEGACY_CONFIG_KEYS = [
   { section: "docker", key: "dockerfile", replacement: "docker.file" },
@@ -199,6 +202,7 @@ const OPERATION_TYPE_PLAN = "plan";
 
 function getDefaultBuildConfig() {
   return {
+    strictConfig: false,
     docker: {
       file: DEFAULT_DOCKERFILE,
       context: DEFAULT_CONTEXT,
@@ -212,6 +216,7 @@ function getDefaultBuildConfig() {
       push: {
         enabled: false,
         branches: [],
+        branchesShortcut: EMPTY_STRING,
         denyNonPublicPush: false
       },
       tags: {
@@ -246,7 +251,9 @@ function getDefaultBuildConfig() {
     },
     git: {
       publicBranches: [],
-      nonPublicBranches: []
+      publicBranchesShortcut: EMPTY_STRING,
+      nonPublicBranches: [],
+      nonPublicBranchesShortcut: EMPTY_STRING
     }
   };
 }
@@ -321,36 +328,58 @@ function objectHasOwn(value, key) {
   return Boolean(value) && Object.prototype.hasOwnProperty.call(value, key);
 }
 
-function loadBuildConfig(repoRoot) {
+function resolveStrictConfigMode(config, env) {
+  const envStrict = getString(env && env[ENV_DOCKSHIP_STRICT_CONFIG]);
+
+  if (envStrict) {
+    return normalizeBool(envStrict, false);
+  }
+
+  return normalizeBool(config && config.strictConfig, false);
+}
+
+function loadBuildConfig(repoRoot, env = process.env) {
   const configPath = path.join(repoRoot, BUILD_DIR, BUILD_CONFIG_FILE);
+  const defaultConfig = getDefaultBuildConfig();
 
   if (!fileExists(configPath)) {
     return {
-      config: getDefaultBuildConfig(),
-      warnings: []
+      config: defaultConfig,
+      warnings: [],
+      strictConfigMode: resolveStrictConfigMode(defaultConfig, env)
     };
   }
 
   try {
     const parsed = JSON.parse(readText(configPath));
+
     return {
-      config: parsed || getDefaultBuildConfig(),
-      warnings: []
+      config: parsed || defaultConfig,
+      warnings: [],
+      strictConfigMode: resolveStrictConfigMode(parsed, env)
     };
   } catch (err) {
     const errorMessage = err && err.message ? err.message : String(err);
+    const strictConfigMode = resolveStrictConfigMode(null, env);
+
+    if (strictConfigMode) {
+      throw new Error(`${STRICT_CONFIG_PARSE_ERROR_PREFIX} ${BUILD_CONFIG_RELATIVE_PATH}. ${errorMessage}`);
+    }
+
     return {
-      config: getDefaultBuildConfig(),
+      config: defaultConfig,
       warnings: [
         `${WARNING_PREFIX} Failed to parse ${BUILD_CONFIG_RELATIVE_PATH}; using defaults. ${errorMessage}`
-      ]
+      ],
+      strictConfigMode
     };
   }
 }
 
-function getLegacyConfigWarnings(config) {
+function getLegacyConfigWarnings(config, strictConfigMode = false) {
   const warnings = [];
   const root = config && typeof config === "object" ? config : {};
+  const legacyKeyNames = [];
 
   LEGACY_CONFIG_KEYS.forEach(entry => {
     const sectionValue = root[entry.section];
@@ -360,13 +389,28 @@ function getLegacyConfigWarnings(config) {
     }
 
     if (objectHasOwn(sectionValue, entry.key)) {
+      legacyKeyNames.push(`${entry.section}.${entry.key}`);
       warnings.push(
         `${WARNING_PREFIX} Legacy config key '${entry.section}.${entry.key}' is deprecated; use '${entry.replacement}' instead.`
       );
     }
   });
 
+  if (strictConfigMode && legacyKeyNames.length > 0) {
+    throw new Error(`${STRICT_CONFIG_LEGACY_ERROR_PREFIX}: ${legacyKeyNames.join(", ")}.`);
+  }
+
   return warnings;
+}
+
+function mergePatternLists(...sources) {
+  const values = [];
+
+  sources.forEach(source => {
+    getStringArray(source, []).forEach(value => pushUnique(values, value));
+  });
+
+  return values;
 }
 
 function emitWarnings(warnings) {
@@ -1766,19 +1810,27 @@ function getDockerSettings(config, env, repoRoot, options = {}) {
   const aliases = docker.aliases || {};
   const cleanup = docker.cleanup || {};
   const git = config.git || {};
-  const publicBranches = getStringArray(git.publicBranches, []);
-  const nonPublicBranches = getStringArray(git.nonPublicBranches, []);
+  const publicBranches = mergePatternLists(git.publicBranches, git.publicBranchesShortcut);
+  const nonPublicBranches = mergePatternLists(git.nonPublicBranches, git.nonPublicBranchesShortcut);
   const legacyQaBranches = getStringArray(git.qaBranches, []);
   const legacyNextBranches = getStringArray(git.nextBranches, []);
   const combinedNonPublicBranches = [...nonPublicBranches, ...legacyQaBranches, ...legacyNextBranches];
+  const classificationConfig = {
+    ...git,
+    publicBranches,
+    nonPublicBranches,
+    qaBranches: [],
+    nextBranches: []
+  };
 
   const registry = getString(env[ENV_DOCKER_REGISTRY], getNestedValue(target.registry, docker.targetRegistry));
   const repo = getString(env[ENV_DOCKER_REPOSITORY], getNestedValue(target.repository, docker.targetRepository));
   const branchInfo = getCurrentBranchInfo(repoRoot, env);
-  const pushBranches = getStringArray(
-    env[ENV_DOCKER_PUSH_BRANCHES],
-    getNestedValue(push.branches, docker.pushBranches)
+  const configuredPushBranches = mergePatternLists(
+    getNestedValue(push.branches, docker.pushBranches),
+    getNestedValue(push.branchesShortcut, docker.pushBranchesShortcut)
   );
+  const pushBranches = getStringArray(env[ENV_DOCKER_PUSH_BRANCHES], configuredPushBranches);
 
   if (requireImageTarget && !registry) throw new Error(`${ENV_DOCKER_REGISTRY} required`);
   if (requireImageTarget && !repo) throw new Error(`${ENV_DOCKER_REPOSITORY} required`);
@@ -1823,7 +1875,7 @@ function getDockerSettings(config, env, repoRoot, options = {}) {
       || normalizeAliasRules(aliases.rules).length > 0,
     explicitPublicBuild: getNestedValue(getNestedValue(docker.publicBuild, docker.public), docker.build && docker.build.public),
     denyNonPublicPush: normalizeBool(push.denyNonPublicPush, false),
-    branchClass: classifyBranch(branchInfo.branch, git),
+    branchClass: classifyBranch(branchInfo.branch, classificationConfig),
     cleanupLocal: resolveCleanupLocal(env, getNestedValue(cleanup.local, DEFAULT_CLEANUP_LOCAL_MODE)),
     runner: normalizeDockerRunner(env[ENV_DOCKER_RUNNER], normalizeDockerRunner(docker.runner, DEFAULT_DOCKER_RUNNER)),
     platform: getString(env[ENV_DOCKER_PLATFORM], docker.platform),
@@ -3008,6 +3060,7 @@ ENVIRONMENT VARIABLES:
   DOCKER_CONTEXT              Docker build context (default: .)
   DOCKERFILE_PATH             Path to Dockerfile (default: Dockerfile)
   DOCKER_RUNNER               Docker runner: build, buildx, or auto (default: build)
+  DOCKSHIP_STRICT_CONFIG      Fail fast on invalid/legacy config keys (true/false)
   DOCKER_PLATFORM             Target platform (e.g., linux/amd64)
   DOCKER_BUILD_ARGS           Build args as KEY=value pairs
   DOCKER_LOGIN_USERNAME       Optional registry login username
@@ -3086,9 +3139,9 @@ function main() {
 
   const root = findRepoRoot(process.cwd());
 
-  const loadedConfig = loadBuildConfig(root);
+  const loadedConfig = loadBuildConfig(root, process.env);
   const config = loadedConfig.config;
-  const configWarnings = [...loadedConfig.warnings, ...getLegacyConfigWarnings(config)];
+  const configWarnings = [...loadedConfig.warnings, ...getLegacyConfigWarnings(config, loadedConfig.strictConfigMode)];
 
   emitWarnings(configWarnings);
 
