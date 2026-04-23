@@ -307,6 +307,42 @@ test("tags command applies branch-based suffix to all semantic tags", t => {
   assert.ok(!tags.includes("1.1"));
 });
 
+test("tags command expands regex capture tokens in semantic tag transforms", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "0.0.0.710");
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      aliases: {
+        rules: [
+          {
+            id: "topic-label-suffix",
+            match: "regex:^topic\/([^/]+)$",
+            tagSuffix: "-$1"
+          }
+        ]
+      },
+      nonPublicMode: "full-only"
+    },
+    git: {
+      nonPublicBranches: ["topic/*"]
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["tags"], {
+    env: {
+      GITHUB_REF_NAME: "topic/auth"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected tags command to succeed");
+  const tags = JSON.parse(result.stdout);
+
+  assert.ok(tags.includes("0.0.0.710-auth"));
+  assert.ok(!tags.includes("topic-auth"));
+});
+
 test("plan --json reports branch-aware non-public classification and guardrail tags", t => {
   const repoRoot = createTempRepo(t);
 
@@ -508,6 +544,33 @@ test("tags command includes branch aliases when configured", t => {
 
   assert.ok(tags.includes("Feature-demo_branch"));
   assert.ok(tags.includes("feature-demo-branch"));
+});
+
+test("tags command sanitizes branch aliases when alias.sanitize is true", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "1.2.3");
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      aliases: {
+        branch: true,
+        sanitize: true
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["tags"], {
+    env: {
+      GITHUB_REF_NAME: "Feature/Auth_Branch"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected tags command to succeed");
+  const tags = JSON.parse(result.stdout);
+
+  assert.ok(tags.includes("feature-auth-branch"));
+  assert.ok(!tags.includes("Feature-Auth_Branch"));
 });
 
 test("tag command retags from primary reference to computed secondary references", t => {

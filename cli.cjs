@@ -210,6 +210,7 @@ function getDefaultBuildConfig() {
       aliases: {
         branch: false,
         sanitizedBranch: false,
+        sanitize: false,
         prefix: EMPTY_STRING,
         suffix: EMPTY_STRING,
         maxLength: 0,
@@ -1198,7 +1199,7 @@ function getAliasComputation(version, settings, buildType) {
   if (settings.aliasBranch) {
     const simpleAlias = applyAliasFormatting(normalizeBranchAlias(branch), {
       ...globalFormatting,
-      sanitize: ALIAS_SANITIZE_NONE
+      sanitize: settings.aliasSanitize ? ALIAS_SANITIZE_SANITIZED : ALIAS_SANITIZE_NONE
     });
     pushUnique(aliases, simpleAlias);
   }
@@ -1222,10 +1223,14 @@ function getAliasComputation(version, settings, buildType) {
         rule.tagMaxLength > 0 ||
         getString(rule.tagNonPublicPrefix)
       ),
-      prefix: getString(rule.tagPrefix),
-      suffix: getString(rule.tagSuffix),
+      prefix: expandAliasTemplate(getString(rule.tagPrefix), branch, matchResult.captures),
+      suffix: expandAliasTemplate(getString(rule.tagSuffix), branch, matchResult.captures),
       maxLength: rule.tagMaxLength > 0 ? rule.tagMaxLength : globalFormatting.maxLength,
-      nonPublicPrefix: getString(rule.tagNonPublicPrefix) || globalFormatting.nonPublicPrefix
+      nonPublicPrefix: expandAliasTemplate(
+        getString(rule.tagNonPublicPrefix) || globalFormatting.nonPublicPrefix,
+        branch,
+        matchResult.captures
+      )
     };
 
     if (matchResult.matched && selectedRuleId === NULL_VALUE) {
@@ -1237,10 +1242,6 @@ function getAliasComputation(version, settings, buildType) {
       }
 
       rule.aliases.forEach(value => pushUnique(ruleBaseCandidates, value));
-
-      if (ruleBaseCandidates.length === 0) {
-        pushUnique(ruleBaseCandidates, branch);
-      }
 
       ruleBaseCandidates.forEach(candidate => {
         const formatted = applyAliasFormatting(candidate, {
@@ -1591,6 +1592,7 @@ function getDockerSettings(config, env, repoRoot, options = {}) {
     nonPublicMode: getString(docker.nonPublicMode).toLowerCase(),
     aliasBranch: normalizeBool(aliases.branch, false),
     aliasSanitizedBranch: normalizeBool(aliases.sanitizedBranch, false),
+    aliasSanitize: normalizeBool(aliases.sanitize, false),
     aliasPrefix: getString(aliases.prefix),
     aliasSuffix: getString(aliases.suffix),
     aliasMaxLength: normalizePositiveInt(aliases.maxLength, 0),
