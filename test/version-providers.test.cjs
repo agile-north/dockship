@@ -707,6 +707,40 @@ test("version orchestration falls back to env when dotnet is detected but no ver
   });
 });
 
+test("version orchestration emits warning when auto-detected provider falls back to env", t => {
+  const repoRoot = createTempRepo(t);
+
+  writeText(path.join(repoRoot, "App.csproj"), [
+    "<Project Sdk=\"Microsoft.NET.Sdk\">",
+    "  <PropertyGroup>",
+    "    <TargetFramework>net8.0</TargetFramework>",
+    "  </PropertyGroup>",
+    "</Project>"
+  ].join("\n"));
+
+  const context = {
+    ...versionIndex.buildContext(repoRoot),
+    env: { DOCKSHIP_VERSION: "9.0.1-ci.1" }
+  };
+
+  const originalWrite = process.stderr.write;
+  const stderr = [];
+
+  process.stderr.write = chunk => {
+    stderr.push(String(chunk));
+    return true;
+  };
+
+  try {
+    const versionInfo = versionIndex.resolveVersion(context);
+    assertVersionFields(versionInfo, { source: "env", version: "9.0.1-ci.1" });
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+
+  assert.match(stderr.join(""), /Auto-detected version provider 'dotnet' failed; retrying with 'env'/);
+});
+
 test("custom provider loaded from relative path is resolved against repoRoot", t => {
   const repoRoot = createTempRepo(t);
 

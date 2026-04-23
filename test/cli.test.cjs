@@ -705,6 +705,89 @@ test("tags command sanitizes branch aliases when alias.sanitize is true", t => {
   assert.ok(!tags.includes("Feature-Auth_Branch"));
 });
 
+test("tags command sanitizes the full alias value after prefix/suffix when alias rule sanitize is true", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "1.2.3");
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      aliases: {
+        rules: [
+          {
+            id: "topic-lane",
+            match: "topic/*",
+            template: "lane-$0",
+            prefix: "X-",
+            suffix: "-Y",
+            sanitize: true
+          }
+        ]
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["tags"], {
+    env: {
+      GITHUB_REF_NAME: "topic/Auth_Branch"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected tags command to succeed");
+  const tags = JSON.parse(result.stdout);
+
+  assert.ok(tags.includes("x-lane-topic-auth-branch-y"));
+  assert.ok(!tags.includes("X-lane-topic/Auth_Branch-Y"));
+  assert.ok(!tags.includes("x-lane-topic/Auth_Branch-y"));
+});
+
+test("tags command warns when legacy flat config keys are used", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "1.2.3");
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      targetRegistry: "ghcr.io",
+      targetRepository: "acme/widget",
+      tagLatest: true
+    },
+    git: {
+      qaBranches: ["qa/*"]
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["tags"], {
+    env: {
+      GITHUB_REF_NAME: "qa/demo"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected tags command to succeed");
+  assert.match(result.stderr, /Legacy config key 'docker\.targetRegistry' is deprecated/);
+  assert.match(result.stderr, /Legacy config key 'docker\.targetRepository' is deprecated/);
+  assert.match(result.stderr, /Legacy config key 'docker\.tagLatest' is deprecated/);
+  assert.match(result.stderr, /Legacy config key 'git\.qaBranches' is deprecated/);
+});
+
+test("tags command warns and falls back to defaults when dockship config is invalid JSON", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "1.2.3");
+
+  writeText(path.join(repoRoot, ".dockship", "dockship.json"), "{ invalid json");
+
+  const result = runCliMain(repoRoot, ["tags"]);
+
+  assert.equal(result.status, 0, result.stderr || "Expected tags command to succeed");
+  assert.match(result.stderr, /Failed to parse \.dockship\/dockship\.json; using defaults\./);
+
+  const tags = JSON.parse(result.stdout);
+  assert.ok(tags.includes("1.2.3"));
+  assert.ok(tags.includes("1.2"));
+  assert.ok(tags.includes("1"));
+});
+
 test("tag command retags from primary reference to computed secondary references", t => {
   const repoRoot = createTempRepo(t);
 

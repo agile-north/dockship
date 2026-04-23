@@ -56,6 +56,7 @@ const NULL_VALUE = null;
 const BUILD_DIR = ".dockship";
 const BUILD_CONFIG_FILE = "dockship.json";
 const VERSION_SCRIPT_PATH = ["lib", "version", "index.cjs"];
+const BUILD_CONFIG_RELATIVE_PATH = `${BUILD_DIR}/${BUILD_CONFIG_FILE}`;
 
 const ENV_FILE_NAME = ".env";
 
@@ -179,6 +180,20 @@ const PUSH_SKIP_REASON_BRANCH_UNKNOWN = "branch_unknown";
 const PUSH_SKIP_REASON_BRANCH_NOT_ALLOWED = "branch_not_allowed";
 const PUSH_SKIP_REASON_NON_PUBLIC_DENIED = "non_public_denied";
 
+const WARNING_PREFIX = "Warning:";
+
+const LEGACY_CONFIG_KEYS = [
+  { section: "docker", key: "dockerfile", replacement: "docker.file" },
+  { section: "docker", key: "targetRegistry", replacement: "docker.target.registry" },
+  { section: "docker", key: "targetRepository", replacement: "docker.target.repository" },
+  { section: "docker", key: "loginRegistry", replacement: "docker.login.registry" },
+  { section: "docker", key: "pushEnabled", replacement: "docker.push.enabled" },
+  { section: "docker", key: "pushBranches", replacement: "docker.push.branches" },
+  { section: "docker", key: "tagLatest", replacement: "docker.tags.latest" },
+  { section: "git", key: "qaBranches", replacement: "git.nonPublicBranches" },
+  { section: "git", key: "nextBranches", replacement: "git.nonPublicBranches" }
+];
+
 const OPERATION_TYPE_TAG = "tag";
 const OPERATION_TYPE_PLAN = "plan";
 
@@ -300,6 +315,70 @@ function tryReadJson(p) {
   } catch {
     return null;
   }
+}
+
+function objectHasOwn(value, key) {
+  return Boolean(value) && Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function loadBuildConfig(repoRoot) {
+  const configPath = path.join(repoRoot, BUILD_DIR, BUILD_CONFIG_FILE);
+
+  if (!fileExists(configPath)) {
+    return {
+      config: getDefaultBuildConfig(),
+      warnings: []
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(readText(configPath));
+    return {
+      config: parsed || getDefaultBuildConfig(),
+      warnings: []
+    };
+  } catch (err) {
+    const errorMessage = err && err.message ? err.message : String(err);
+    return {
+      config: getDefaultBuildConfig(),
+      warnings: [
+        `${WARNING_PREFIX} Failed to parse ${BUILD_CONFIG_RELATIVE_PATH}; using defaults. ${errorMessage}`
+      ]
+    };
+  }
+}
+
+function getLegacyConfigWarnings(config) {
+  const warnings = [];
+  const root = config && typeof config === "object" ? config : {};
+
+  LEGACY_CONFIG_KEYS.forEach(entry => {
+    const sectionValue = root[entry.section];
+
+    if (!sectionValue || typeof sectionValue !== "object") {
+      return;
+    }
+
+    if (objectHasOwn(sectionValue, entry.key)) {
+      warnings.push(
+        `${WARNING_PREFIX} Legacy config key '${entry.section}.${entry.key}' is deprecated; use '${entry.replacement}' instead.`
+      );
+    }
+  });
+
+  return warnings;
+}
+
+function emitWarnings(warnings) {
+  const values = Array.isArray(warnings) ? warnings : [];
+
+  values.forEach(message => {
+    const text = getString(message);
+
+    if (text) {
+      console.error(text);
+    }
+  });
 }
 
 function findRepoRoot(startDir) {
@@ -744,6 +823,14 @@ function execCapture(command, args, options = {}) {
     throw new Error(res.stderr || `${command} failed`);
   }
 
+  if (options.forwardStderr === true) {
+    const stderr = getString(res.stderr);
+
+    if (stderr) {
+      process.stderr.write(stderr.endsWith("\n") ? stderr : `${stderr}\n`);
+    }
+  }
+
   return res.stdout.trim();
 }
 
@@ -760,7 +847,10 @@ function getVersion(repoRoot) {
     throw new Error(`Missing version script: ${scriptPath}`);
   }
 
-  const output = execCapture(process.execPath, [scriptPath], { cwd: repoRoot });
+  const output = execCapture(process.execPath, [scriptPath], {
+    cwd: repoRoot,
+    forwardStderr: true
+  });
 
   const json = JSON.parse(output);
 
@@ -1202,17 +1292,17 @@ function applyAliasFormatting(baseAlias, options = {}) {
   const nonPublicPrefix = getString(options.nonPublicPrefix);
   const applyNonPublicPrefix = options.applyNonPublicPrefix === true;
 
-  let formatted = applyAliasSanitize(baseAlias, sanitizeMode);
+  let formatted = `${prefix}${getString(baseAlias)}${suffix}`;
+
+  if (applyNonPublicPrefix && nonPublicPrefix) {
+    formatted = `${nonPublicPrefix}${formatted}`;
+  }
 
   if (!formatted) {
     return EMPTY_STRING;
   }
 
-  formatted = `${prefix}${formatted}${suffix}`;
-
-  if (applyNonPublicPrefix && nonPublicPrefix) {
-    formatted = `${nonPublicPrefix}${formatted}`;
-  }
+  formatted = applyAliasSanitize(formatted, sanitizeMode);
 
   return truncateDeterministic(formatted, maxLength);
 }
@@ -2996,7 +3086,11 @@ function main() {
 
   const root = findRepoRoot(process.cwd());
 
-  const config = tryReadJson(path.join(root, BUILD_DIR, BUILD_CONFIG_FILE)) || getDefaultBuildConfig();
+  const loadedConfig = loadBuildConfig(root);
+  const config = loadedConfig.config;
+  const configWarnings = [...loadedConfig.warnings, ...getLegacyConfigWarnings(config)];
+
+  emitWarnings(configWarnings);
 
 
   loadDotEnv(root);

@@ -229,6 +229,14 @@ Dockship supports structured output for automation and CI pipelines.
 - `--json` is shorthand for `--output json`
 - `--output` supports `human` (default) and `json`
 
+Output-to-file flags (all equivalent):
+
+- `--json-file <path>`
+- `--output-file <path>`
+- `--output-json-file <path>`
+
+When any output-file flag is used, dockship writes the JSON envelope to that file and keeps stdout clean.
+
 In `json` mode:
 
 - stdout contains exactly one JSON object
@@ -250,6 +258,11 @@ npx dock tags --output json
 
 # Build + push with step-level results
 npx dock all --json
+
+# Write envelope to file (aliases supported)
+npx dock tags --json-file dock-tags.json
+npx dock tags --output-file dock-tags.json
+npx dock tags --output-json-file dock-tags.json
 ```
 
 Extract values:
@@ -377,7 +390,7 @@ Configuration precedence is:
 | `docker.nonPublicMode` | string | empty | none | `full-only` emits only the full version tag for non-public builds |
 | `docker.aliases.branch` | boolean | `false` | none | Adds branch alias tags (e.g., `Feature/demo` -> `Feature-demo`) |
 | `docker.aliases.sanitizedBranch` | boolean | `false` | none | Adds lowercase sanitized branch alias tags (e.g., `Feature/demo_branch` -> `feature-demo-branch`) |
-| `docker.aliases.sanitize` | boolean | `false` | none | When true, applies lowercase sanitized formatting to built-in branch aliases and rule-generated aliases by default |
+| `docker.aliases.sanitize` | boolean | `false` | none | When true, sanitizes the full emitted alias value after any prefix/suffix and rule formatting are applied |
 | `docker.aliases.prefix` | string | empty | none | Global alias prefix applied after alias generation |
 | `docker.aliases.suffix` | string | empty | none | Global alias suffix applied after alias generation |
 | `docker.aliases.maxLength` | number | `0` | none | Deterministic max alias length (`0` = unlimited) |
@@ -438,7 +451,7 @@ Rule shape:
 - `caseInsensitive`: optional boolean to evaluate this rule case-insensitively
 - `template`: supports `$BRANCH`, `$BRANCH_SANITIZED`, `$0` (entire matched value), and capture references `$1..$9`
 - `alias`/`aliases`: static alias values
-- `sanitize`: `none`, `branch`, `sanitized`, or boolean (`true` => `sanitized`, `false` => `none`)
+- `sanitize`: `none`, `branch`, `sanitized`, or boolean (`true` => `sanitized`, `false` => `none`). This sanitization applies to the complete alias value after prefix/suffix and rule formatting are combined.
 - `prefix`/`suffix`/`maxLength`/`nonPublicPrefix`: optional per-rule alias formatting overrides
 - `tagPrefix`/`tagSuffix`/`tagMaxLength`/`tagNonPublicPrefix`: optional per-rule semantic tag transforms that rewrite the generated semantic tags
 
@@ -605,6 +618,36 @@ Legacy flat keys are still accepted for compatibility:
 - `docker.tagLatest` → `docker.tags.latest`
 - `git.qaBranches` → `git.nonPublicBranches`
 - `git.nextBranches` → `git.nonPublicBranches`
+
+When legacy flat keys are present, dockship emits a warning on stderr and continues using compatibility behavior.
+
+Non-public guardrail behavior:
+
+- if a build resolves as non-public and the resolved version has no suffix, dockship applies `-np` to generated `major` and `majorMinor` tags
+- the full version tag remains unchanged
+- this is visible in `dock plan --json` as `nonPublicGuardrailApplied: true`
+
+Branch source precedence for current branch detection:
+
+1. `GITHUB_HEAD_REF`
+2. `GITHUB_REF_NAME`
+3. `BUILD_SOURCEBRANCHNAME`
+4. `BUILD_SOURCEBRANCH`
+5. `BRANCH_NAME`
+6. `CI_COMMIT_REF_NAME`
+7. `TEAMCITY_BUILD_BRANCH`
+8. `GIT_BRANCH`
+9. fallback: `git rev-parse --abbrev-ref HEAD`
+
+`docker.cleanup.local: "auto"` resolves to `true` only when a CI signal is detected. Supported CI signals are:
+
+- `CI`
+- `GITHUB_ACTIONS`
+- `GITLAB_CI`
+- `TF_BUILD`
+- `BUILDKITE`
+- `TEAMCITY_VERSION`
+- `JENKINS_URL`
 
 Environment variable overrides (CI):
 
