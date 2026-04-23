@@ -138,6 +138,7 @@ Authentication options:
 
 ```json
 {
+  "strictConfig": false,                  // Optional: fail fast on invalid config/legacy keys
   "docker": {
     "file": "Dockerfile",
     "context": ".",
@@ -229,6 +230,14 @@ Dockship supports structured output for automation and CI pipelines.
 - `--json` is shorthand for `--output json`
 - `--output` supports `human` (default) and `json`
 
+Output-to-file flags (all equivalent):
+
+- `--json-file <path>`
+- `--output-file <path>`
+- `--output-json-file <path>`
+
+When any output-file flag is used, dockship writes the JSON envelope to that file and keeps stdout clean.
+
 In `json` mode:
 
 - stdout contains exactly one JSON object
@@ -250,6 +259,11 @@ npx dock tags --output json
 
 # Build + push with step-level results
 npx dock all --json
+
+# Write envelope to file (aliases supported)
+npx dock tags --json-file dock-tags.json
+npx dock tags --output-file dock-tags.json
+npx dock tags --output-json-file dock-tags.json
 ```
 
 Extract values:
@@ -274,10 +288,12 @@ Keep README focused on onboarding and common usage. Detailed feature contracts l
 
 The config file is optional. If `.dockship/dockship.json` is missing, dockship uses built-in defaults:
 
+- `strictConfig = false`
 - `docker.file = "Dockerfile"`
 - `docker.context = "."`
 - `docker.push.enabled = false`
 - `docker.push.branches = []`
+- `docker.push.branchesShortcut = ""`
 - `docker.push.denyNonPublicPush = false`
 - `docker.tags.latest = false`
 - `docker.tagPolicy.public = ["full", "majorMinor", "major"]`
@@ -290,7 +306,9 @@ The config file is optional. If `.dockship/dockship.json` is missing, dockship u
 - `docker.cleanup.local = "auto"`
 - `docker.runner = "build"`
 - `git.publicBranches = []`
+- `git.publicBranchesShortcut = ""`
 - `git.nonPublicBranches = []`
+- `git.nonPublicBranchesShortcut = ""`
 
 For `dock build`, `dock ship`, and `dock all`, image target settings still need to come from config or env:
 
@@ -306,6 +324,7 @@ Configuration precedence is:
 
 ```json
 {
+  "strictConfig": false,
   "docker": {
     "file": "Dockerfile",                  // Path to Dockerfile
     "context": ".",                        // Build context
@@ -319,6 +338,7 @@ Configuration precedence is:
     "push": {
       "enabled": false,                     // Enable/disable push
       "branches": ["main", "develop"],    // Optional: allowed branches, supports *
+      "branchesShortcut": "main,develop",  // Optional: comma/semicolon/newline-delimited shortcut
       "denyNonPublicPush": false             // Optional: deny pushes for non-public classified builds
     },
     "tags": {
@@ -354,7 +374,9 @@ Configuration precedence is:
   },
   "git": {
     "publicBranches": ["main", "release/*"],
-    "nonPublicBranches": ["feature/*", "hotfix/*"]
+    "publicBranchesShortcut": "main,release/*",
+    "nonPublicBranches": ["feature/*", "hotfix/*"],
+    "nonPublicBranchesShortcut": "feature/*,hotfix/*"
   }
 }
 ```
@@ -363,6 +385,7 @@ Configuration precedence is:
 
 | Setting | Type | Default | Env override | Notes |
 | --- | --- | --- | --- | --- |
+| `strictConfig` | boolean | `false` | `DOCKSHIP_STRICT_CONFIG` | When true, fails fast on invalid `.dockship/dockship.json` and on legacy flat compatibility keys |
 | `docker.file` | string | `Dockerfile` | `DOCKERFILE_PATH` | Path to the Dockerfile relative to the repo root |
 | `docker.context` | string | `.` | `DOCKER_CONTEXT` | Docker build context |
 | `docker.target.registry` | string | empty | `DOCKER_TARGET_REGISTRY` | Required for `dock build`, `dock ship`, and `dock all` |
@@ -370,6 +393,7 @@ Configuration precedence is:
 | `docker.login.registry` | string | empty | `DOCKER_LOGIN_REGISTRY` | Optional login registry override; defaults to `docker.target.registry` |
 | `docker.push.enabled` | boolean | `false` | `DOCKER_PUSH_ENABLED` | Enables pushing for `dock ship` and `dock all` |
 | `docker.push.branches` | string[] | `[]` | `DOCKER_PUSH_BRANCHES` | Branch allow-list; supports `*` wildcards |
+| `docker.push.branchesShortcut` | string | empty | none | Shortcut for push branch allow-list using comma/semicolon/newline delimiters |
 | `docker.push.denyNonPublicPush` | boolean | `false` | none | When `true`, non-public classified builds are not pushed |
 | `docker.tags.latest` | boolean | `false` | `DOCKER_TAG_LATEST` | Adds the `latest` tag in addition to semantic tags |
 | `docker.tagPolicy.public` | string[] | `full,majorMinor,major` | none | Tag kinds for public builds (`full`, `majorMinor`, `major`, `latest`) |
@@ -377,7 +401,7 @@ Configuration precedence is:
 | `docker.nonPublicMode` | string | empty | none | `full-only` emits only the full version tag for non-public builds |
 | `docker.aliases.branch` | boolean | `false` | none | Adds branch alias tags (e.g., `Feature/demo` -> `Feature-demo`) |
 | `docker.aliases.sanitizedBranch` | boolean | `false` | none | Adds lowercase sanitized branch alias tags (e.g., `Feature/demo_branch` -> `feature-demo-branch`) |
-| `docker.aliases.sanitize` | boolean | `false` | none | When true, applies lowercase sanitized formatting to built-in branch aliases and rule-generated aliases by default |
+| `docker.aliases.sanitize` | boolean | `false` | none | When true, sanitizes the full emitted alias value after any prefix/suffix and rule formatting are applied |
 | `docker.aliases.prefix` | string | empty | none | Global alias prefix applied after alias generation |
 | `docker.aliases.suffix` | string | empty | none | Global alias suffix applied after alias generation |
 | `docker.aliases.maxLength` | number | `0` | none | Deterministic max alias length (`0` = unlimited) |
@@ -392,7 +416,9 @@ Configuration precedence is:
 | `docker.stages` | object | `{}` | n/a | Stage definitions for `dock stage <name>` and `dock stage all`. Each stage may set `target`/`output`/`runner` to override `docker.buildTarget`, `docker.buildOutput`, `docker.runner` |
 | `docker.stageFallback` | boolean | `true` | n/a | When true, `dock stage all` runs a final no-target build after configured stages (default). |
 | `git.publicBranches` | string[] | `[]` | n/a | Optional patterns classifying builds as public |
+| `git.publicBranchesShortcut` | string | empty | n/a | Shortcut for public branch patterns using comma/semicolon/newline delimiters |
 | `git.nonPublicBranches` | string[] | `[]` | n/a | Optional patterns classifying builds as non-public |
+| `git.nonPublicBranchesShortcut` | string | empty | n/a | Shortcut for non-public branch patterns using comma/semicolon/newline delimiters |
 
 ### Alias Tags
 
@@ -438,7 +464,7 @@ Rule shape:
 - `caseInsensitive`: optional boolean to evaluate this rule case-insensitively
 - `template`: supports `$BRANCH`, `$BRANCH_SANITIZED`, `$0` (entire matched value), and capture references `$1..$9`
 - `alias`/`aliases`: static alias values
-- `sanitize`: `none`, `branch`, `sanitized`, or boolean (`true` => `sanitized`, `false` => `none`)
+- `sanitize`: `none`, `branch`, `sanitized`, or boolean (`true` => `sanitized`, `false` => `none`). This sanitization applies to the complete alias value after prefix/suffix and rule formatting are combined.
 - `prefix`/`suffix`/`maxLength`/`nonPublicPrefix`: optional per-rule alias formatting overrides
 - `tagPrefix`/`tagSuffix`/`tagMaxLength`/`tagNonPublicPrefix`: optional per-rule semantic tag transforms that rewrite the generated semantic tags
 
@@ -606,6 +632,38 @@ Legacy flat keys are still accepted for compatibility:
 - `git.qaBranches` → `git.nonPublicBranches`
 - `git.nextBranches` → `git.nonPublicBranches`
 
+When legacy flat keys are present, dockship emits a warning on stderr and continues using compatibility behavior.
+
+If `strictConfig` (or `DOCKSHIP_STRICT_CONFIG=true`) is enabled, dockship fails instead of warning when legacy flat keys are present.
+
+Non-public guardrail behavior:
+
+- if a build resolves as non-public and the resolved version has no suffix, dockship applies `-np` to generated `major` and `majorMinor` tags
+- the full version tag remains unchanged
+- this is visible in `dock plan --json` as `nonPublicGuardrailApplied: true`
+
+Branch source precedence for current branch detection:
+
+1. `GITHUB_HEAD_REF`
+2. `GITHUB_REF_NAME`
+3. `BUILD_SOURCEBRANCHNAME`
+4. `BUILD_SOURCEBRANCH`
+5. `BRANCH_NAME`
+6. `CI_COMMIT_REF_NAME`
+7. `TEAMCITY_BUILD_BRANCH`
+8. `GIT_BRANCH`
+9. fallback: `git rev-parse --abbrev-ref HEAD`
+
+`docker.cleanup.local: "auto"` resolves to `true` only when a CI signal is detected. Supported CI signals are:
+
+- `CI`
+- `GITHUB_ACTIONS`
+- `GITLAB_CI`
+- `TF_BUILD`
+- `BUILDKITE`
+- `TEAMCITY_VERSION`
+- `JENKINS_URL`
+
 Environment variable overrides (CI):
 
 - `DOCKER_TARGET_REGISTRY`
@@ -615,6 +673,7 @@ Environment variable overrides (CI):
 - `DOCKER_TAG_LATEST`
 - `DOCKER_CLEANUP_LOCAL`
 - `DOCKER_RUNNER`
+- `DOCKSHIP_STRICT_CONFIG`
 - `DOCKER_LOGIN_USERNAME`
 - `DOCKER_LOGIN_PASSWORD`
 - `DOCKER_LOGIN_REGISTRY`
