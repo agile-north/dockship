@@ -157,8 +157,10 @@ const TAG_KIND_FULL = "full";
 const TAG_KIND_MAJOR = "major";
 const TAG_KIND_MAJOR_MINOR = "majorMinor";
 const TAG_KIND_LATEST = "latest";
+const TAG_TRANSFORM_MODE_APPEND = "append";
+const TAG_TRANSFORM_MODE_REPLACE = "replace";
 const NON_PUBLIC_MODE_FULL_ONLY = "full-only";
-const NON_PUBLIC_GUARDRAIL_SUFFIX = "-np";
+const NON_PUBLIC_GUARDRAIL_SUFFIX = "-pre";
 const BRANCH_CLASS_PUBLIC = "public";
 const BRANCH_CLASS_NON_PUBLIC = "non-public";
 const BRANCH_CLASS_NONE = "none";
@@ -1211,6 +1213,51 @@ function applyAliasSanitize(value, mode) {
   return normalizeBranchAlias(input, { lowercase: true });
 }
 
+function normalizeBranchAliasFragment(branch, options = {}) {
+  const value = getString(branch);
+
+  if (!value) {
+    return EMPTY_STRING;
+  }
+
+  const lower = options.lowercase === true;
+  let normalized = value;
+
+  normalized = normalized
+    .replace(/^refs[\\/]+heads[\\/]+/i, EMPTY_STRING)
+    .replace(/^origin[\\/]+/i, EMPTY_STRING)
+    .replace(/[\\/]+/g, "-")
+    .replace(/[^A-Za-z0-9_.-]+/g, "-")
+    .replace(/-+/g, "-");
+
+  if (lower) {
+    normalized = normalized
+      .replace(/[_.]+/g, "-")
+      .replace(/-+/g, "-")
+      .toLowerCase();
+  }
+
+  return normalized;
+}
+
+function applyAliasSanitizeFragment(value, mode) {
+  const input = getString(value);
+
+  if (!input) {
+    return EMPTY_STRING;
+  }
+
+  if (mode === ALIAS_SANITIZE_NONE) {
+    return input;
+  }
+
+  if (mode === ALIAS_SANITIZE_BRANCH) {
+    return normalizeBranchAliasFragment(input);
+  }
+
+  return normalizeBranchAliasFragment(input, { lowercase: true });
+}
+
 function expandAliasTemplate(template, branch, captures = []) {
   let expanded = getString(template);
 
@@ -1306,7 +1353,8 @@ function normalizeAliasRule(rawRule, index) {
     tagPrefix: getString(rawRule.tagPrefix),
     tagSuffix: getString(rawRule.tagSuffix),
     tagMaxLength: normalizePositiveInt(rawRule.tagMaxLength, 0),
-    tagNonPublicPrefix: getString(rawRule.tagNonPublicPrefix)
+    tagNonPublicPrefix: getString(rawRule.tagNonPublicPrefix),
+    tagMode: normalizeTagTransformMode(rawRule.tagMode, TAG_TRANSFORM_MODE_REPLACE)
   };
 }
 
@@ -1351,6 +1399,49 @@ function applyAliasFormatting(baseAlias, options = {}) {
   return truncateDeterministic(formatted, maxLength);
 }
 
+function normalizeTagTransformMode(value, fallback = TAG_TRANSFORM_MODE_REPLACE) {
+  const mode = getString(value, fallback).toLowerCase();
+
+  if ([TAG_TRANSFORM_MODE_APPEND, TAG_TRANSFORM_MODE_REPLACE].includes(mode)) {
+    return mode;
+  }
+
+  return fallback;
+}
+
+function applySemanticTagFormatting(baseTag, options = {}) {
+  const sanitizeMode = normalizeAliasSanitizeMode(options.sanitize, ALIAS_SANITIZE_NONE);
+  const tagMode = normalizeTagTransformMode(options.tagMode, TAG_TRANSFORM_MODE_REPLACE);
+  let prefix = getString(options.prefix);
+  let suffix = getString(options.suffix);
+  const maxLength = normalizePositiveInt(options.maxLength, 0);
+  let nonPublicPrefix = getString(options.nonPublicPrefix);
+  const applyNonPublicPrefix = options.applyNonPublicPrefix === true;
+  let formatted = `${baseTag}`;
+
+  if (sanitizeMode !== ALIAS_SANITIZE_NONE) {
+    prefix = applyAliasSanitizeFragment(prefix, sanitizeMode);
+    suffix = applyAliasSanitizeFragment(suffix, sanitizeMode);
+    nonPublicPrefix = applyAliasSanitizeFragment(nonPublicPrefix, sanitizeMode);
+  }
+
+  if (tagMode === TAG_TRANSFORM_MODE_APPEND) {
+    formatted = `${formatted}${prefix}${suffix}`;
+  } else {
+    formatted = `${prefix}${formatted}${suffix}`;
+  }
+
+  if (applyNonPublicPrefix && nonPublicPrefix) {
+    formatted = `${nonPublicPrefix}${formatted}`;
+  }
+
+  if (!formatted) {
+    return EMPTY_STRING;
+  }
+
+  return truncateDeterministic(formatted, maxLength);
+}
+
 function resolveAliasDefaultSanitizeMode(settings) {
   return settings.aliasSanitize ? ALIAS_SANITIZE_SANITIZED : ALIAS_SANITIZE_NONE;
 }
@@ -1367,6 +1458,20 @@ function resolveAliasRuleSanitizeMode(rule, defaultSanitizeMode) {
   }
 
   return defaultSanitizeMode;
+}
+
+function resolveAliasRuleTransformSanitizeMode(rule) {
+  if (rule && typeof rule.sanitize === "boolean") {
+    return rule.sanitize ? ALIAS_SANITIZE_SANITIZED : ALIAS_SANITIZE_NONE;
+  }
+
+  const ruleSanitize = getString(rule && rule.sanitize);
+
+  if (ruleSanitize) {
+    return normalizeAliasSanitizeMode(ruleSanitize, ALIAS_SANITIZE_NONE);
+  }
+
+  return ALIAS_SANITIZE_NONE;
 }
 
 function getAliasPolicy(settings, buildType) {
@@ -1388,7 +1493,7 @@ function getAliasPolicy(settings, buildType) {
   };
 }
 
-function computeRuleTagTransform(rule, aliasPolicy, branch, captures) {
+function computeRuleTagTransform(rule, aliasPolicy, branch, captures, sanitizeMode) {
   return {
     enabled: Boolean(
       getString(rule.tagPrefix) ||
@@ -1403,7 +1508,9 @@ function computeRuleTagTransform(rule, aliasPolicy, branch, captures) {
       getString(rule.tagNonPublicPrefix) || aliasPolicy.globalFormatting.nonPublicPrefix,
       branch,
       captures
-    )
+    ),
+    sanitizeMode,
+    tagMode: rule.tagMode || TAG_TRANSFORM_MODE_APPEND
   };
 }
 
@@ -1416,7 +1523,8 @@ function selectAliasRule(branch, rules, aliasPolicy) {
       caseInsensitive: rule.caseInsensitive
     });
     const sanitizeMode = resolveAliasRuleSanitizeMode(rule, aliasPolicy.defaultSanitizeMode);
-    const tagTransform = computeRuleTagTransform(rule, aliasPolicy, branch, matchResult.captures);
+    const transformSanitizeMode = resolveAliasRuleTransformSanitizeMode(rule);
+    const tagTransform = computeRuleTagTransform(rule, aliasPolicy, branch, matchResult.captures, transformSanitizeMode);
 
     if (matchResult.matched && selectedRuleId === NULL_VALUE) {
       selectedRuleId = rule.id;
@@ -1752,7 +1860,9 @@ function getTagComputation(version, settings) {
   const baseTags = [];
 
   if (tagKinds.includes(TAG_KIND_FULL)) {
-    pushUnique(baseTags, version.version);
+    const fullTag = getString(version.version);
+    const shouldPreserveSuffix = Boolean(getString(version.suffix)) && !fullTag.endsWith(effectiveSuffix);
+    pushUnique(baseTags, shouldPreserveSuffix ? `${fullTag}${effectiveSuffix}` : fullTag);
   }
 
   if (tagKinds.includes(TAG_KIND_MAJOR) && version.major) {
@@ -1771,13 +1881,14 @@ function getTagComputation(version, settings) {
 
   baseTags.forEach(tag => {
     const transformed = hasTagTransform
-      ? applyAliasFormatting(tag, {
+      ? applySemanticTagFormatting(tag, {
         prefix: transform.prefix,
         suffix: transform.suffix,
         maxLength: transform.maxLength,
         nonPublicPrefix: transform.nonPublicPrefix,
         applyNonPublicPrefix: !buildType.isPublic,
-        sanitize: ALIAS_SANITIZE_NONE
+        sanitize: transform.sanitizeMode || ALIAS_SANITIZE_NONE,
+        tagMode: transform.tagMode
       })
       : tag;
 
@@ -1807,7 +1918,11 @@ function getDockerSettings(config, env, repoRoot, options = {}) {
   const push = docker.push || {};
   const tags = docker.tags || {};
   const tagPolicy = docker.tagPolicy || {};
-  const aliases = docker.aliases || {};
+  const tagAliases = tags.aliases || {};
+  const aliases = {
+    ...tagAliases,
+    ...(docker.aliases || {})
+  };
   const cleanup = docker.cleanup || {};
   const git = config.git || {};
   const publicBranches = mergePatternLists(git.publicBranches, git.publicBranchesShortcut);

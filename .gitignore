@@ -24,6 +24,7 @@ desktop.ini
 dist/
 out/
 tmp/
+tmp-repro/
 
 # Local scratch docs and brainstorming
 .scratch/

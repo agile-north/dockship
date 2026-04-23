@@ -407,6 +407,7 @@ Configuration precedence is:
 | `docker.aliases.maxLength` | number | `0` | none | Deterministic max alias length (`0` = unlimited) |
 | `docker.aliases.nonPublicPrefix` | string | empty | none | Optional prefix applied to alias tags when the build is classified non-public. Set to `np-` to prefix non-public aliases (for example `feature-demo` -> `np-feature-demo`) |
 | `docker.aliases.rules` | object[] | `[]` | none | Ordered alias rules, first-match-wins (`match`, `template`, `aliases`, `sanitize`, optional per-rule formatting) |
+| `docker.tags.aliases` | object | none | none | Alternate location for alias settings; merged into `docker.aliases` for compatibility |
 | `docker.cleanup.local` | `auto` \| boolean | `auto` | `DOCKER_CLEANUP_LOCAL` | `auto` cleans up in CI and keeps images locally for dev. `true` always removes built tags after `dock build`/`dock all`; `false` never removes them. |
 | `docker.runner` | `build` \| `buildx` \| `auto` | `build` | `DOCKER_RUNNER` | Selects Docker runner command. `auto` prefers `docker buildx build` and falls back to `docker build` |
 | `docker.platform` | string | empty | `DOCKER_PLATFORM` | Passed to `docker build --platform` |
@@ -464,7 +465,8 @@ Rule shape:
 - `caseInsensitive`: optional boolean to evaluate this rule case-insensitively
 - `template`: supports `$BRANCH`, `$BRANCH_SANITIZED`, `$0` (entire matched value), and capture references `$1..$9`
 - `alias`/`aliases`: static alias values
-- `sanitize`: `none`, `branch`, `sanitized`, or boolean (`true` => `sanitized`, `false` => `none`). This sanitization applies to the complete alias value after prefix/suffix and rule formatting are combined.
+- `sanitize`: `none`, `branch`, `sanitized`, or boolean (`true` => `sanitized`, `false` => `none`). When set on a rule, this sanitization applies to the complete alias value after prefix/suffix and rule formatting are combined, and also applies to semantic tag transforms produced by `tag*` settings.
+- `tagMode`: `append` or `replace`. When `replace`, semantic transforms from `tagPrefix`/`tagSuffix` wrap the original semantic tag rather than discarding it. Default is `replace`.
 - `prefix`/`suffix`/`maxLength`/`nonPublicPrefix`: optional per-rule alias formatting overrides
 - `tagPrefix`/`tagSuffix`/`tagMaxLength`/`tagNonPublicPrefix`: optional per-rule semantic tag transforms that rewrite the generated semantic tags
 
@@ -638,7 +640,7 @@ If `strictConfig` (or `DOCKSHIP_STRICT_CONFIG=true`) is enabled, dockship fails 
 
 Non-public guardrail behavior:
 
-- if a build resolves as non-public and the resolved version has no suffix, dockship applies `-np` to generated `major` and `majorMinor` tags
+- if a build resolves as non-public and the resolved version has no suffix, dockship applies `-pre` to generated `major` and `majorMinor` tags
 - the full version tag remains unchanged
 - this is visible in `dock plan --json` as `nonPublicGuardrailApplied: true`
 
