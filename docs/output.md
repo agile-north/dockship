@@ -206,6 +206,8 @@ Returns computed tags and references.
 
 Tags include semantic tags and optional alias tags based on policy settings. Some alias rules can also rewrite the existing semantic tags themselves using `tagPrefix`, `tagSuffix`, `tagMaxLength`, or `tagNonPublicPrefix`.
 
+The optional `docker.aliases.sanitize` setting controls whether built-in branch aliases are output in lowercase sanitized form by default.
+
 ---
 
 ### plan
@@ -241,6 +243,7 @@ Computes deterministic behavior without mutating Docker state.
       "aliases": {
         "branch": false,
         "sanitizedBranch": false,
+        "sanitize": false,
         "prefix": "",
         "suffix": "",
         "maxLength": 0,

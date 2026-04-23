@@ -377,6 +377,7 @@ Configuration precedence is:
 | `docker.nonPublicMode` | string | empty | none | `full-only` emits only the full version tag for non-public builds |
 | `docker.aliases.branch` | boolean | `false` | none | Adds branch alias tags (e.g., `Feature/demo` -> `Feature-demo`) |
 | `docker.aliases.sanitizedBranch` | boolean | `false` | none | Adds lowercase sanitized branch alias tags (e.g., `Feature/demo_branch` -> `feature-demo-branch`) |
+| `docker.aliases.sanitize` | boolean | `false` | none | When true, applies lowercase sanitized formatting to built-in branch aliases and rule-generated aliases by default |
 | `docker.aliases.prefix` | string | empty | none | Global alias prefix applied after alias generation |
 | `docker.aliases.suffix` | string | empty | none | Global alias suffix applied after alias generation |
 | `docker.aliases.maxLength` | number | `0` | none | Deterministic max alias length (`0` = unlimited) |
@@ -403,6 +404,7 @@ Simple options:
 
 - `docker.aliases.branch: true` adds a branch alias (sanitized path separators)
 - `docker.aliases.sanitizedBranch: true` adds a lowercase sanitized branch alias
+- `docker.aliases.sanitize: true` makes built-in branch alias output lowercase and sanitized by default
 
 Examples for branch `Feature/customer-west`:
 
