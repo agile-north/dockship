@@ -184,6 +184,364 @@ test("tags command preserves prerelease suffixes for major and major.minor tags"
   assert.deepEqual(JSON.parse(result.stdout), ["1.2.3-beta.1", "1-beta.1", "1.2-beta.1"]);
 });
 
+test("tags command uses standard defaults when alias policy is not configured", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "1.2.3");
+
+  const result = runNodeScript(CLI_PATH, ["tags"], { cwd: repoRoot });
+
+  assert.equal(result.status, 0, result.stderr || "Expected tags command to succeed");
+  assert.deepEqual(JSON.parse(result.stdout), ["1.2.3", "1", "1.2"]);
+});
+
+test("tags command supports simple alias formatting controls", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "1.2.3");
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      aliases: {
+        branch: true,
+        prefix: "alias-",
+        suffix: "-candidate",
+        maxLength: 28,
+        nonPublicPrefix: "np-"
+      }
+    },
+    git: {
+      nonPublicBranches: ["feature/*"]
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["tags"], {
+    env: {
+      GITHUB_REF_NAME: "feature/customer-west"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected tags command to succeed");
+  const tags = JSON.parse(result.stdout);
+
+  assert.ok(tags.includes("np-alias-feature-customer-we"));
+});
+
+test("tags command applies first matching alias rule with regex captures", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "2.7.4");
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      aliases: {
+        rules: [
+          {
+            id: "release-lane",
+            match: "regex:^release\\/(\\d+)\\.(\\d+)$",
+            template: "rel-$1-$2",
+            sanitize: "sanitized"
+          },
+          {
+            id: "fallback",
+            match: "*",
+            alias: "should-not-be-used"
+          }
+        ]
+      }
+    },
+    git: {
+      publicBranches: ["release/*"]
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["tags"], {
+    env: {
+      GITHUB_REF_NAME: "release/2.7"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected tags command to succeed");
+  const tags = JSON.parse(result.stdout);
+
+  assert.ok(tags.includes("rel-2-7"));
+  assert.ok(!tags.includes("should-not-be-used"));
+});
+
+test("tags command applies branch-based suffix to all semantic tags", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "1.1.323");
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      aliases: {
+        rules: [
+          {
+            id: "release-qa",
+            match: "release/current-qa",
+            tagSuffix: "-qa"
+          }
+        ]
+      }
+    },
+    git: {
+      publicBranches: ["release/*"]
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["tags"], {
+    env: {
+      GITHUB_REF_NAME: "release/current-qa"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected tags command to succeed");
+  const tags = JSON.parse(result.stdout);
+
+  assert.ok(tags.includes("1.1.323-qa"));
+  assert.ok(tags.includes("1-qa"));
+  assert.ok(tags.includes("1.1-qa"));
+  assert.ok(!tags.includes("1.1.323"));
+  assert.ok(!tags.includes("1"));
+  assert.ok(!tags.includes("1.1"));
+});
+
+test("plan --json reports branch-aware non-public classification and guardrail tags", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "1.2.3");
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      },
+      push: {
+        enabled: true,
+        branches: ["release/*"]
+      }
+    },
+    git: {
+      nonPublicBranches: ["feature/*"]
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["plan", "--json"], {
+    env: {
+      GITHUB_REF_NAME: "feature/demo"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected plan --json command to succeed");
+
+  const payload = JSON.parse(result.stdout);
+
+  assert.equal(payload.command, "plan");
+  assert.equal(payload.status, "success");
+  assert.equal(payload.result.plan.branchClass, "non-public");
+  assert.equal(payload.result.plan.buildType, "non-public");
+  assert.equal(payload.result.plan.buildTypeSource, "branch.classification");
+  assert.equal(payload.result.plan.nonPublicGuardrailApplied, true);
+  assert.ok(payload.result.artifact.image.tags.includes("1-np"));
+  assert.ok(payload.result.artifact.image.tags.includes("1.2-np"));
+  assert.equal(payload.result.plan.push.eligible, false);
+  assert.equal(payload.result.plan.push.reason, "branch_not_allowed");
+  assert.equal(payload.result.plan.inputs.version.hasSuffix, false);
+  assert.equal(payload.result.plan.inputs.pushPolicy.enabled, true);
+  assert.equal(payload.result.plan.inputs.aliases.branch, false);
+  assert.ok(Array.isArray(payload.result.plan.tagComputation.tags));
+  assert.equal(payload.result.plan.branchMatching.nonPublic.matched, true);
+  assert.ok(payload.result.plan.branchMatching.nonPublic.matchedPatterns.includes("feature/*"));
+  assert.equal(payload.result.plan.branchMatching.pushAllowed.matched, false);
+  assert.equal(payload.result.plan.decisionTrace.pushSkipReason, "branch_not_allowed");
+  assert.equal(payload.result.plan.aliasPolicy.selectionMode, "first-match-wins");
+  assert.ok(Array.isArray(payload.result.plan.aliasPolicy.rules));
+});
+
+test("plan --json emits full alias rule trace including non-matches", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "3.1.0");
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      aliases: {
+        nonPublicPrefix: "np-",
+        rules: [
+          {
+            id: "release-rule",
+            match: "release/*",
+            template: "rel-$BRANCH_SANITIZED"
+          },
+          {
+            id: "feature-rule",
+            match: "feature/*",
+            template: "feat-$BRANCH_SANITIZED"
+          }
+        ]
+      }
+    },
+    git: {
+      nonPublicBranches: ["feature/*"]
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["plan", "--json"], {
+    env: {
+      GITHUB_REF_NAME: "feature/new-api"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected plan command to succeed");
+  const payload = JSON.parse(result.stdout);
+
+  assert.equal(payload.result.plan.aliasPolicy.selectedRuleId, "feature-rule");
+  assert.equal(payload.result.plan.aliasPolicy.rules.length, 2);
+  assert.equal(payload.result.plan.aliasPolicy.rules[0].matched, false);
+  assert.equal(payload.result.plan.aliasPolicy.rules[1].matched, true);
+  assert.ok(payload.result.plan.tagComputation.aliases.includes("np-feat-feature-new-api"));
+});
+
+test("branch pattern matching supports regex for classification and push rules", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "2.5.1");
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      },
+      push: {
+        enabled: true,
+        branches: ["regex:^release\\/\\d+\\.\\d+$"]
+      }
+    },
+    git: {
+      publicBranches: ["regex:^release\\/\\d+\\.\\d+$"]
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["plan", "--json"], {
+    env: {
+      GITHUB_REF_NAME: "release/2.5"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected plan --json command to succeed");
+
+  const payload = JSON.parse(result.stdout);
+
+  assert.equal(payload.result.plan.branchClass, "public");
+  assert.equal(payload.result.plan.buildType, "public");
+  assert.equal(payload.result.plan.push.eligible, true);
+  assert.equal(payload.result.plan.branchMatching.public.matched, true);
+  assert.ok(payload.result.plan.branchMatching.public.matchedPatterns.includes("regex:^release\\/\\d+\\.\\d+$"));
+  assert.equal(payload.result.plan.branchMatching.pushAllowed.matched, true);
+});
+
+test("push --json skips when denyNonPublicPush is true for non-public branch classification", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "1.2.3");
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      },
+      push: {
+        enabled: true,
+        denyNonPublicPush: true,
+        branches: ["feature/*"]
+      }
+    },
+    git: {
+      nonPublicBranches: ["feature/*"]
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["push", "--json"], {
+    env: {
+      GITHUB_REF_NAME: "feature/demo"
+    }
+  });
+
+  assert.equal(result.status, 0, "Expected skipped push to exit with code 0");
+
+  const payload = JSON.parse(result.stdout);
+
+  assert.equal(payload.status, "skipped");
+  assert.equal(payload.result.operation.skipped, true);
+  assert.equal(payload.result.operation.skipReason, "non_public_denied");
+  assert.equal(payload.result.operation.policy.buildType, "non-public");
+  assert.equal(payload.result.operation.policy.denyNonPublicPush, true);
+});
+
+test("tags command includes branch aliases when configured", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "1.2.3");
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      aliases: {
+        branch: true,
+        sanitizedBranch: true
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["tags"], {
+    env: {
+      GITHUB_REF_NAME: "Feature/demo_branch"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected tags command to succeed");
+
+  const tags = JSON.parse(result.stdout);
+
+  assert.ok(tags.includes("Feature-demo_branch"));
+  assert.ok(tags.includes("feature-demo-branch"));
+});
+
+test("tag command retags from primary reference to computed secondary references", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "1.2.3");
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      },
+      tags: {
+        latest: true
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, ["tag"], {
+    env: {
+      DOCKER_TARGET_REGISTRY: "ghcr.io",
+      DOCKER_TARGET_REPOSITORY: "acme/widget"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected tag command to succeed");
+  assert.deepEqual(result.dockerCommands, [
+    ["tag", "ghcr.io/acme/widget:1.2.3", "ghcr.io/acme/widget:1"],
+    ["tag", "ghcr.io/acme/widget:1.2.3", "ghcr.io/acme/widget:1.2"],
+    ["tag", "ghcr.io/acme/widget:1.2.3", "ghcr.io/acme/widget:latest"]
+  ]);
+});
+
 test("version command supports --json envelope with patch/build compatibility", t => {
   const repoRoot = createTempRepo(t);
 

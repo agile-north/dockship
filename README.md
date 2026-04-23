@@ -150,11 +150,25 @@ Authentication options:
     },
     "push": {
       "enabled": false,
-      "branches": ["main", "develop"]
+      "branches": ["main", "develop"],
+      "denyNonPublicPush": false
     },
     "tags": {
       "latest": false
+    },
+    "tagPolicy": {
+      "public": ["full", "majorMinor", "major"],
+      "nonPublic": ["full", "majorMinor", "major"]
+    },
+    "nonPublicMode": "",
+    "aliases": {
+      "branch": false,
+      "sanitizedBranch": false
     }
+  },
+  "git": {
+    "publicBranches": ["main", "release/*"],
+    "nonPublicBranches": ["feature/*", "hotfix/*"]
   },
 
   "version": {
@@ -195,6 +209,12 @@ npx dock all
 
 # Show generated tags
 npx dock tags
+
+# Apply computed policy tags to local image references
+npx dock tag
+
+# Preview deterministic tags and push policy outcome
+npx dock plan
 
 # Emit machine-readable envelope output
 npx dock version --json
@@ -258,9 +278,19 @@ The config file is optional. If `.dockship/dockship.json` is missing, dockship u
 - `docker.context = "."`
 - `docker.push.enabled = false`
 - `docker.push.branches = []`
+- `docker.push.denyNonPublicPush = false`
 - `docker.tags.latest = false`
+- `docker.tagPolicy.public = ["full", "majorMinor", "major"]`
+- `docker.tagPolicy.nonPublic = ["full", "majorMinor", "major"]`
+- `docker.nonPublicMode = ""`
+- `docker.aliases.branch = false`
+- `docker.aliases.sanitizedBranch = false`
+- `docker.aliases.nonPublicPrefix = ""`
+- `docker.aliases.rules = []`
 - `docker.cleanup.local = "auto"`
 - `docker.runner = "build"`
+- `git.publicBranches = []`
+- `git.nonPublicBranches = []`
 
 For `dock build`, `dock ship`, and `dock all`, image target settings still need to come from config or env:
 
@@ -288,10 +318,20 @@ Configuration precedence is:
     },
     "push": {
       "enabled": false,                     // Enable/disable push
-      "branches": ["main", "develop"]    // Optional: allowed branches, supports *
+      "branches": ["main", "develop"],    // Optional: allowed branches, supports *
+      "denyNonPublicPush": false             // Optional: deny pushes for non-public classified builds
     },
     "tags": {
       "latest": false                       // Add 'latest' tag
+    },
+    "tagPolicy": {
+      "public": ["full", "majorMinor", "major"],
+      "nonPublic": ["full", "majorMinor", "major"]
+    },
+    "nonPublicMode": "",                   // Optional: "full-only" limits non-public tags to full version
+    "aliases": {
+      "branch": false,                      // Optional: add branch alias tag
+      "sanitizedBranch": false              // Optional: add lowercase sanitized branch alias tag
     },
     "cleanup": {
       "local": "auto"                    // Auto: clean in CI, keep locally for dev
@@ -311,6 +351,10 @@ Configuration precedence is:
         "output": "type=local,dest=./stage-test"
       }
     }
+  },
+  "git": {
+    "publicBranches": ["main", "release/*"],
+    "nonPublicBranches": ["feature/*", "hotfix/*"]
   }
 }
 ```
@@ -326,7 +370,18 @@ Configuration precedence is:
 | `docker.login.registry` | string | empty | `DOCKER_LOGIN_REGISTRY` | Optional login registry override; defaults to `docker.target.registry` |
 | `docker.push.enabled` | boolean | `false` | `DOCKER_PUSH_ENABLED` | Enables pushing for `dock ship` and `dock all` |
 | `docker.push.branches` | string[] | `[]` | `DOCKER_PUSH_BRANCHES` | Branch allow-list; supports `*` wildcards |
+| `docker.push.denyNonPublicPush` | boolean | `false` | none | When `true`, non-public classified builds are not pushed |
 | `docker.tags.latest` | boolean | `false` | `DOCKER_TAG_LATEST` | Adds the `latest` tag in addition to semantic tags |
+| `docker.tagPolicy.public` | string[] | `full,majorMinor,major` | none | Tag kinds for public builds (`full`, `majorMinor`, `major`, `latest`) |
+| `docker.tagPolicy.nonPublic` | string[] | `full,majorMinor,major` | none | Tag kinds for non-public builds |
+| `docker.nonPublicMode` | string | empty | none | `full-only` emits only the full version tag for non-public builds |
+| `docker.aliases.branch` | boolean | `false` | none | Adds branch alias tags (e.g., `Feature/demo` -> `Feature-demo`) |
+| `docker.aliases.sanitizedBranch` | boolean | `false` | none | Adds lowercase sanitized branch alias tags (e.g., `Feature/demo_branch` -> `feature-demo-branch`) |
+| `docker.aliases.prefix` | string | empty | none | Global alias prefix applied after alias generation |
+| `docker.aliases.suffix` | string | empty | none | Global alias suffix applied after alias generation |
+| `docker.aliases.maxLength` | number | `0` | none | Deterministic max alias length (`0` = unlimited) |
+| `docker.aliases.nonPublicPrefix` | string | empty | none | Optional prefix applied to alias tags when the build is classified non-public. Set to `np-` to prefix non-public aliases (for example `feature-demo` -> `np-feature-demo`) |
+| `docker.aliases.rules` | object[] | `[]` | none | Ordered alias rules, first-match-wins (`match`, `template`, `aliases`, `sanitize`, optional per-rule formatting) |
 | `docker.cleanup.local` | `auto` \| boolean | `auto` | `DOCKER_CLEANUP_LOCAL` | `auto` cleans up in CI and keeps images locally for dev. `true` always removes built tags after `dock build`/`dock all`; `false` never removes them. |
 | `docker.runner` | `build` \| `buildx` \| `auto` | `build` | `DOCKER_RUNNER` | Selects Docker runner command. `auto` prefers `docker buildx build` and falls back to `docker build` |
 | `docker.platform` | string | empty | `DOCKER_PLATFORM` | Passed to `docker build --platform` |
@@ -335,6 +390,103 @@ Configuration precedence is:
 | `docker.buildArgs` | object | `{}` | `DOCKER_BUILD_ARGS` | Key/value pairs passed as `--build-arg KEY=value`; appended before the auto-generated `APP_VERSION` build arg. Env var accepts JSON (`{"K":"v"}`) or semicolon-delimited `KEY=value;KEY2=value2` |
 | `docker.stages` | object | `{}` | n/a | Stage definitions for `dock stage <name>` and `dock stage all`. Each stage may set `target`/`output`/`runner` to override `docker.buildTarget`, `docker.buildOutput`, `docker.runner` |
 | `docker.stageFallback` | boolean | `true` | n/a | When true, `dock stage all` runs a final no-target build after configured stages (default). |
+| `git.publicBranches` | string[] | `[]` | n/a | Optional patterns classifying builds as public |
+| `git.nonPublicBranches` | string[] | `[]` | n/a | Optional patterns classifying builds as non-public |
+
+### Alias Tags
+
+Alias tags are additional Docker tags layered on top of semantic version tags. You can use simple toggles, rule-based aliases, or both together.
+
+Some rule-based settings can also rewrite the generated semantic tags themselves using `tagPrefix`, `tagSuffix`, `tagMaxLength`, or `tagNonPublicPrefix`.
+
+Simple options:
+
+- `docker.aliases.branch: true` adds a branch alias (sanitized path separators)
+- `docker.aliases.sanitizedBranch: true` adds a lowercase sanitized branch alias
+
+Examples for branch `Feature/customer-west`:
+
+- `branch: true` -> `Feature-customer-west`
+- `sanitizedBranch: true` -> `feature-customer-west`
+
+Non-public prefix behavior:
+
+- `docker.aliases.nonPublicPrefix` is optional and defaults to empty
+- when set (for example `np-`), it is prepended to aliases only for non-public builds
+- non-public classification comes from branch classification (`git.nonPublicBranches`) or suffix/guardrail behavior
+
+Global alias formatting options:
+
+- `prefix`: prepend to all generated aliases
+- `suffix`: append to all generated aliases
+- `maxLength`: deterministic truncation (`0` means unlimited)
+
+Rule-based aliases (`docker.aliases.rules`) are evaluated in order with first-match-wins selection. A matching rule can either emit additional alias tags from `template`/`alias`/`aliases`, or it can transform the base semantic tags when the `tag*` fields are set.
+
+Rule shape:
+
+- `id`: stable identifier for plan trace output
+- `match`: wildcard (`*`) or regex (`regex:` prefix)
+- `template`: supports `$BRANCH`, `$BRANCH_SANITIZED`, and capture references `$1..$9`
+- `alias`/`aliases`: static alias values
+- `sanitize`: `none`, `branch`, or `sanitized`
+- `prefix`/`suffix`/`maxLength`/`nonPublicPrefix`: optional per-rule alias formatting overrides
+- `tagPrefix`/`tagSuffix`/`tagMaxLength`/`tagNonPublicPrefix`: optional per-rule semantic tag transforms that rewrite the generated semantic tags
+
+Template tokens:
+
+- `$BRANCH`: raw normalized branch name
+- `$BRANCH_SANITIZED`: lowercase sanitized branch name
+- `$1..$9`: regex capture groups from the matching rule pattern
+
+Example alias config:
+
+```json
+{
+  "docker": {
+    "aliases": {
+      "rules": [
+        {
+          "id": "release-qa",
+          "match": "release/current-qa",
+          "tagSuffix": "-qa"
+        }
+      ]
+    }
+  }
+}
+```
+
+With branch `release/current-qa` and version `1.1.323`, this would produce `1-qa`, `1.1-qa`, and `1.1.323-qa`.
+
+Alias rule config example:
+
+```json
+{
+  "docker": {
+    "aliases": {
+      "branch": true,
+      "sanitizedBranch": false,
+      "nonPublicPrefix": "np-",
+      "rules": [
+        {
+          "id": "release-lane",
+          "match": "regex:^release\\/(\\d+)\\.(\\d+)$",
+          "template": "rel-$1-$2",
+          "sanitize": "sanitized"
+        },
+        {
+          "id": "feature-lane",
+          "match": "feature/*",
+          "template": "feat-$BRANCH_SANITIZED"
+        }
+      ]
+    }
+  }
+}
+```
+
+`branch`/`sanitizedBranch` toggles and `rules` are additive: both can be enabled at the same time.
 
 To export files or artifacts from intermediate Dockerfile stages, set the runner to `buildx` (or `auto`) and pass `--target` and `--output` via `DOCKER_BUILD_ARGS`.
 
@@ -377,12 +529,16 @@ Legacy aliases remain supported for compatibility:
 
 If `docker.push.branches` is omitted or empty, any branch may push.
 
+If `docker.push.denyNonPublicPush` is `true`, pushes are skipped for builds classified as non-public.
+
 Branch matching details:
 
 - patterns are matched against the full normalized branch name
 - `*` matches any sequence of characters
+- regex patterns are supported with `regex:` prefix, for example `regex:^release\/\d+\.\d+$`
 - examples: `main`, `develop`, `release/*`, `feature/*`
 - branch name detection uses common CI branch variables first, then falls back to `git rev-parse --abbrev-ref HEAD`
+- alias rules use ordered `first-match-wins` selection and still emit full plan trace for matched and non-matched rules
 
 Legacy flat keys are still accepted for compatibility:
 
@@ -393,6 +549,8 @@ Legacy flat keys are still accepted for compatibility:
 - `docker.pushEnabled` → `docker.push.enabled`
 - `docker.pushBranches` → `docker.push.branches`
 - `docker.tagLatest` → `docker.tags.latest`
+- `git.qaBranches` → `git.nonPublicBranches`
+- `git.nextBranches` → `git.nonPublicBranches`
 
 Environment variable overrides (CI):
 

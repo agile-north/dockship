@@ -20,6 +20,8 @@ const CMD_TARGET = "target";
 const CMD_ALL = "all";
 const CMD_VERSION = "version";
 const CMD_TAGS = "tags";
+const CMD_TAG = "tag";
+const CMD_PLAN = "plan";
 const CMD_HELP = "help";
 const FLAG_HELP = "--help";
 const FLAG_HELP_SHORT = "-h";
@@ -113,6 +115,7 @@ const DOCKER_BUILD = "build";
 const DOCKER_BUILDX = "buildx";
 const DOCKER_LOGIN = "login";
 const DOCKER_PUSH = "push";
+const DOCKER_TAG = "tag";
 const DOCKER_IMAGE = "image";
 const DOCKER_RM = "rm";
 const DOCKER_FLAG_TAG = "-t";
@@ -147,6 +150,38 @@ const STATUS_ERROR_CODE_DOCKER_PUSH = "DOCKER_PUSH_FAILED";
 const STATUS_ERROR_CODE_USAGE = "USAGE_ERROR";
 const STATUS_ERROR_CODE_UNKNOWN = "UNKNOWN_ERROR";
 
+// Tag policy
+const TAG_KIND_FULL = "full";
+const TAG_KIND_MAJOR = "major";
+const TAG_KIND_MAJOR_MINOR = "majorMinor";
+const TAG_KIND_LATEST = "latest";
+const NON_PUBLIC_MODE_FULL_ONLY = "full-only";
+const NON_PUBLIC_GUARDRAIL_SUFFIX = "-np";
+const BRANCH_CLASS_PUBLIC = "public";
+const BRANCH_CLASS_NON_PUBLIC = "non-public";
+const BRANCH_CLASS_NONE = "none";
+const BUILD_TYPE_SOURCE_EXPLICIT = "config.explicit";
+const BUILD_TYPE_SOURCE_BRANCH = "branch.classification";
+const BUILD_TYPE_SOURCE_SUFFIX = "version.suffix";
+const PATTERN_TYPE_WILDCARD = "wildcard";
+const PATTERN_TYPE_REGEX = "regex";
+const PATTERN_REGEX_PREFIX = "regex:";
+const ALIAS_SANITIZE_NONE = "none";
+const ALIAS_SANITIZE_BRANCH = "branch";
+const ALIAS_SANITIZE_SANITIZED = "sanitized";
+const ALIAS_RULE_SELECTION_MODE = "first-match-wins";
+const DEFAULT_ALIAS_NON_PUBLIC_PREFIX = "";
+const TEMPLATE_TOKEN_BRANCH = "$BRANCH";
+const TEMPLATE_TOKEN_BRANCH_SANITIZED = "$BRANCH_SANITIZED";
+
+const PUSH_SKIP_REASON_PUSH_DISABLED = "push_disabled";
+const PUSH_SKIP_REASON_BRANCH_UNKNOWN = "branch_unknown";
+const PUSH_SKIP_REASON_BRANCH_NOT_ALLOWED = "branch_not_allowed";
+const PUSH_SKIP_REASON_NON_PUBLIC_DENIED = "non_public_denied";
+
+const OPERATION_TYPE_TAG = "tag";
+const OPERATION_TYPE_PLAN = "plan";
+
 function getDefaultBuildConfig() {
   return {
     docker: {
@@ -161,10 +196,25 @@ function getDefaultBuildConfig() {
       },
       push: {
         enabled: false,
-        branches: []
+        branches: [],
+        denyNonPublicPush: false
       },
       tags: {
         latest: false
+      },
+      tagPolicy: {
+        public: [TAG_KIND_FULL, TAG_KIND_MAJOR_MINOR, TAG_KIND_MAJOR],
+        nonPublic: [TAG_KIND_FULL, TAG_KIND_MAJOR_MINOR, TAG_KIND_MAJOR]
+      },
+      nonPublicMode: EMPTY_STRING,
+      aliases: {
+        branch: false,
+        sanitizedBranch: false,
+        prefix: EMPTY_STRING,
+        suffix: EMPTY_STRING,
+        maxLength: 0,
+        nonPublicPrefix: DEFAULT_ALIAS_NON_PUBLIC_PREFIX,
+        rules: []
       },
       cleanup: {
         local: DEFAULT_CLEANUP_LOCAL_MODE
@@ -173,7 +223,14 @@ function getDefaultBuildConfig() {
       platform: EMPTY_STRING,
       buildTarget: EMPTY_STRING,
       buildOutput: EMPTY_STRING,
-      buildArgs: {}
+      buildArgs: {},
+      build: {
+        public: NULL_VALUE
+      }
+    },
+    git: {
+      publicBranches: [],
+      nonPublicBranches: []
     }
   };
 }
@@ -835,16 +892,649 @@ function branchPatternToRegex(pattern) {
   return new RegExp(`^${escapeRegex(pattern).replace(/\\\*/g, ".*")}$`);
 }
 
+function parseRegexPattern(rawPattern) {
+  const source = getString(rawPattern);
+
+  if (!source.toLowerCase().startsWith(PATTERN_REGEX_PREFIX)) {
+    return null;
+  }
+
+  const body = source.slice(PATTERN_REGEX_PREFIX.length).trim();
+
+  if (!body) {
+    return null;
+  }
+
+  const literalMatch = body.match(/^\/(.*)\/([a-z]*)$/i);
+
+  if (literalMatch) {
+    return {
+      pattern: literalMatch[1],
+      flags: literalMatch[2] || EMPTY_STRING
+    };
+  }
+
+  return {
+    pattern: body,
+    flags: EMPTY_STRING
+  };
+}
+
+function getBranchPatternMatcher(pattern) {
+  const raw = getString(pattern);
+  const regexParts = parseRegexPattern(raw);
+
+  if (regexParts) {
+    try {
+      return {
+        type: PATTERN_TYPE_REGEX,
+        raw,
+        matcher: new RegExp(regexParts.pattern, regexParts.flags),
+        valid: true
+      };
+    } catch {
+      return {
+        type: PATTERN_TYPE_REGEX,
+        raw,
+        matcher: null,
+        valid: false
+      };
+    }
+  }
+
+  return {
+    type: PATTERN_TYPE_WILDCARD,
+    raw,
+    matcher: branchPatternToRegex(raw),
+    valid: true
+  };
+}
+
+function evaluateBranchPatterns(branch, patterns) {
+  const branchName = getString(branch);
+  const normalizedPatterns = getStringArray(patterns, []);
+  const evaluations = normalizedPatterns.map(pattern => {
+    const entry = getBranchPatternMatcher(pattern);
+    const matched = Boolean(branchName) && entry.valid && entry.matcher.test(branchName);
+
+    return {
+      pattern: entry.raw,
+      type: entry.type,
+      valid: entry.valid,
+      matched
+    };
+  });
+
+  return {
+    branch: branchName || NULL_VALUE,
+    configured: normalizedPatterns.length > 0,
+    matched: evaluations.some(item => item.matched),
+    matchedPatterns: evaluations.filter(item => item.matched).map(item => item.pattern),
+    invalidPatterns: evaluations.filter(item => !item.valid).map(item => item.pattern),
+    evaluations
+  };
+}
+
 function isBranchAllowed(branch, patterns) {
-  if (!patterns.length) {
+  const normalizedPatterns = getStringArray(patterns, []);
+
+  if (!normalizedPatterns.length) {
     return true;
   }
 
-  if (!branch) {
+  if (!getString(branch)) {
     return false;
   }
 
-  return patterns.some(pattern => branchPatternToRegex(pattern).test(branch));
+  return evaluateBranchPatterns(branch, normalizedPatterns).matched;
+}
+
+function pushUnique(values, value) {
+  if (!value) {
+    return;
+  }
+
+  if (!values.includes(value)) {
+    values.push(value);
+  }
+}
+
+function normalizePositiveInt(value, fallback = 0) {
+  if (value === undefined || value === null || value === EMPTY_STRING) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(String(value), 10);
+
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+
+  return parsed;
+}
+
+function truncateDeterministic(value, maxLength) {
+  const input = getString(value);
+
+  if (!input) {
+    return EMPTY_STRING;
+  }
+
+  if (!maxLength || maxLength < 1 || input.length <= maxLength) {
+    return input;
+  }
+
+  return input.slice(0, maxLength);
+}
+
+function normalizeAliasSanitizeMode(value, fallback = ALIAS_SANITIZE_SANITIZED) {
+  const mode = getString(value, fallback).toLowerCase();
+
+  if ([ALIAS_SANITIZE_NONE, ALIAS_SANITIZE_BRANCH, ALIAS_SANITIZE_SANITIZED].includes(mode)) {
+    return mode;
+  }
+
+  return fallback;
+}
+
+function applyAliasSanitize(value, mode) {
+  const input = getString(value);
+
+  if (!input) {
+    return EMPTY_STRING;
+  }
+
+  if (mode === ALIAS_SANITIZE_NONE) {
+    return input;
+  }
+
+  if (mode === ALIAS_SANITIZE_BRANCH) {
+    return normalizeBranchAlias(input);
+  }
+
+  return normalizeBranchAlias(input, { lowercase: true });
+}
+
+function expandAliasTemplate(template, branch, captures = []) {
+  let expanded = getString(template);
+
+  if (!expanded) {
+    return EMPTY_STRING;
+  }
+
+  const branchRaw = getString(branch);
+  const branchSanitized = normalizeBranchAlias(branchRaw, { lowercase: true });
+
+  expanded = expanded
+    .split(TEMPLATE_TOKEN_BRANCH_SANITIZED)
+    .join(branchSanitized)
+    .split(TEMPLATE_TOKEN_BRANCH)
+    .join(branchRaw);
+
+  captures.forEach((capture, index) => {
+    const token = `$${index + 1}`;
+    expanded = expanded.split(token).join(getString(capture));
+  });
+
+  return expanded;
+}
+
+function matchBranchPatternWithDetails(branch, pattern) {
+  const entry = getBranchPatternMatcher(pattern);
+  const branchValue = getString(branch);
+
+  if (!branchValue || !entry.valid || !entry.matcher) {
+    return {
+      pattern: entry.raw,
+      type: entry.type,
+      valid: entry.valid,
+      matched: false,
+      captures: []
+    };
+  }
+
+  entry.matcher.lastIndex = 0;
+  const match = entry.matcher.exec(branchValue);
+
+  return {
+    pattern: entry.raw,
+    type: entry.type,
+    valid: entry.valid,
+    matched: Boolean(match),
+    captures: match ? match.slice(1) : []
+  };
+}
+
+function normalizeAliasRule(rawRule, index) {
+  if (!rawRule || typeof rawRule !== "object") {
+    return null;
+  }
+
+  const match = getString(rawRule.match);
+
+  if (!match) {
+    return null;
+  }
+
+  const staticAliases = getStringArray(rawRule.aliases, []);
+  const singleAlias = getString(rawRule.alias);
+  const aliases = singleAlias ? [singleAlias, ...staticAliases] : staticAliases;
+
+  return {
+    id: getString(rawRule.id, `rule-${index + 1}`),
+    match,
+    template: getString(rawRule.template),
+    aliases,
+    prefix: getString(rawRule.prefix),
+    suffix: getString(rawRule.suffix),
+    sanitize: normalizeAliasSanitizeMode(rawRule.sanitize, ALIAS_SANITIZE_SANITIZED),
+    maxLength: normalizePositiveInt(rawRule.maxLength, 0),
+    nonPublicPrefix: getString(rawRule.nonPublicPrefix),
+    tagPrefix: getString(rawRule.tagPrefix),
+    tagSuffix: getString(rawRule.tagSuffix),
+    tagMaxLength: normalizePositiveInt(rawRule.tagMaxLength, 0),
+    tagNonPublicPrefix: getString(rawRule.tagNonPublicPrefix)
+  };
+}
+
+function normalizeAliasRules(rawRules) {
+  if (!Array.isArray(rawRules)) {
+    return [];
+  }
+
+  const normalized = [];
+
+  rawRules.forEach((rule, index) => {
+    const item = normalizeAliasRule(rule, index);
+
+    if (item) {
+      normalized.push(item);
+    }
+  });
+
+  return normalized;
+}
+
+function applyAliasFormatting(baseAlias, options = {}) {
+  const sanitizeMode = normalizeAliasSanitizeMode(options.sanitize, ALIAS_SANITIZE_SANITIZED);
+  const prefix = getString(options.prefix);
+  const suffix = getString(options.suffix);
+  const maxLength = normalizePositiveInt(options.maxLength, 0);
+  const nonPublicPrefix = getString(options.nonPublicPrefix);
+  const applyNonPublicPrefix = options.applyNonPublicPrefix === true;
+
+  let formatted = applyAliasSanitize(baseAlias, sanitizeMode);
+
+  if (!formatted) {
+    return EMPTY_STRING;
+  }
+
+  formatted = `${prefix}${formatted}${suffix}`;
+
+  if (applyNonPublicPrefix && nonPublicPrefix) {
+    formatted = `${nonPublicPrefix}${formatted}`;
+  }
+
+  return truncateDeterministic(formatted, maxLength);
+}
+
+function getAliasComputation(version, settings, buildType) {
+  const branch = getString(settings.currentBranch);
+  const isPublicBuild = buildType ? buildType.isPublic : evaluateBuildType(version, settings).isPublic;
+  const applyNonPublicPrefix = !isPublicBuild;
+  const aliases = [];
+  const ruleTrace = [];
+  let selectedRuleId = NULL_VALUE;
+  let selectedTagTransform = null;
+
+  const globalFormatting = {
+    prefix: settings.aliasPrefix,
+    suffix: settings.aliasSuffix,
+    maxLength: settings.aliasMaxLength,
+    nonPublicPrefix: settings.aliasNonPublicPrefix,
+    applyNonPublicPrefix
+  };
+
+  if (settings.aliasBranch) {
+    const simpleAlias = applyAliasFormatting(normalizeBranchAlias(branch), {
+      ...globalFormatting,
+      sanitize: ALIAS_SANITIZE_NONE
+    });
+    pushUnique(aliases, simpleAlias);
+  }
+
+  if (settings.aliasSanitizedBranch) {
+    const simpleSanitizedAlias = applyAliasFormatting(normalizeBranchAlias(branch, { lowercase: true }), {
+      ...globalFormatting,
+      sanitize: ALIAS_SANITIZE_NONE
+    });
+    pushUnique(aliases, simpleSanitizedAlias);
+  }
+
+  for (const rule of settings.aliasRules) {
+    const matchResult = matchBranchPatternWithDetails(branch, rule.match);
+    const ruleBaseCandidates = [];
+    const ruleAliases = [];
+    const ruleTagTransform = {
+      enabled: Boolean(
+        getString(rule.tagPrefix) ||
+        getString(rule.tagSuffix) ||
+        rule.tagMaxLength > 0 ||
+        getString(rule.tagNonPublicPrefix)
+      ),
+      prefix: getString(rule.tagPrefix),
+      suffix: getString(rule.tagSuffix),
+      maxLength: rule.tagMaxLength > 0 ? rule.tagMaxLength : globalFormatting.maxLength,
+      nonPublicPrefix: getString(rule.tagNonPublicPrefix) || globalFormatting.nonPublicPrefix
+    };
+
+    if (matchResult.matched && selectedRuleId === NULL_VALUE) {
+      selectedRuleId = rule.id;
+      selectedTagTransform = ruleTagTransform.enabled ? ruleTagTransform : selectedTagTransform;
+
+      if (rule.template) {
+        pushUnique(ruleBaseCandidates, expandAliasTemplate(rule.template, branch, matchResult.captures));
+      }
+
+      rule.aliases.forEach(value => pushUnique(ruleBaseCandidates, value));
+
+      if (ruleBaseCandidates.length === 0) {
+        pushUnique(ruleBaseCandidates, branch);
+      }
+
+      ruleBaseCandidates.forEach(candidate => {
+        const formatted = applyAliasFormatting(candidate, {
+          ...globalFormatting,
+          prefix: `${getString(rule.prefix)}${globalFormatting.prefix}`,
+          suffix: `${globalFormatting.suffix}${getString(rule.suffix)}`,
+          maxLength: rule.maxLength > 0 ? rule.maxLength : globalFormatting.maxLength,
+          nonPublicPrefix: getString(rule.nonPublicPrefix) || globalFormatting.nonPublicPrefix,
+          sanitize: rule.sanitize
+        });
+        pushUnique(ruleAliases, formatted);
+        pushUnique(aliases, formatted);
+      });
+    }
+
+    ruleTrace.push({
+      id: rule.id,
+      match: rule.match,
+      type: matchResult.type,
+      valid: matchResult.valid,
+      matched: matchResult.matched,
+      selected: selectedRuleId === rule.id,
+      captures: matchResult.captures,
+      baseCandidates: ruleBaseCandidates,
+      aliases: ruleAliases,
+      tagTransform: ruleTagTransform
+    });
+  }
+
+  return {
+    enabled: settings.aliasPolicyEnabled,
+    aliases,
+    selectionMode: ALIAS_RULE_SELECTION_MODE,
+    selectedRuleId,
+    tagTransform: selectedTagTransform,
+    nonPublicPrefixApplied: applyNonPublicPrefix && Boolean(settings.aliasNonPublicPrefix),
+    globalFormatting: {
+      prefix: settings.aliasPrefix,
+      suffix: settings.aliasSuffix,
+      maxLength: settings.aliasMaxLength,
+      nonPublicPrefix: settings.aliasNonPublicPrefix
+    },
+    rules: ruleTrace
+  };
+}
+
+function normalizeTagPolicyKinds(value, fallback) {
+  const rawKinds = getStringArray(value, fallback);
+  const normalizedKinds = [];
+  const supportedKinds = [TAG_KIND_FULL, TAG_KIND_MAJOR_MINOR, TAG_KIND_MAJOR, TAG_KIND_LATEST];
+
+  rawKinds.forEach(kind => {
+    const normalized = getString(kind);
+
+    if (!supportedKinds.includes(normalized)) {
+      return;
+    }
+
+    pushUnique(normalizedKinds, normalized);
+  });
+
+  if (normalizedKinds.length === 0) {
+    return [TAG_KIND_FULL];
+  }
+
+  return normalizedKinds;
+}
+
+function normalizeBranchAlias(branch, options = {}) {
+  const value = getString(branch);
+
+  if (!value) {
+    return EMPTY_STRING;
+  }
+
+  const lower = options.lowercase === true;
+  let normalized = value;
+
+  normalized = normalized
+    .replace(/^refs[\\/]+heads[\\/]+/i, EMPTY_STRING)
+    .replace(/^origin[\\/]+/i, EMPTY_STRING)
+    .replace(/[\\/]+/g, "-")
+    .replace(/[^A-Za-z0-9_.-]+/g, "-")
+    .replace(/^-+|-+$/g, EMPTY_STRING)
+    .replace(/-+/g, "-");
+
+  if (lower) {
+    normalized = normalized
+      .replace(/[_.]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-+|-+$/g, EMPTY_STRING)
+      .toLowerCase();
+  }
+
+  return normalized;
+}
+
+function classifyBranch(branch, gitConfig) {
+  const branchName = getString(branch);
+
+  if (!branchName) {
+    return BRANCH_CLASS_NONE;
+  }
+
+  const publicBranches = getStringArray(gitConfig && gitConfig.publicBranches, []);
+  const nonPublicBranches = getStringArray(gitConfig && gitConfig.nonPublicBranches, []);
+  const legacyQaBranches = getStringArray(gitConfig && gitConfig.qaBranches, []);
+  const legacyNextBranches = getStringArray(gitConfig && gitConfig.nextBranches, []);
+  const combinedNonPublicBranches = [...nonPublicBranches, ...legacyQaBranches, ...legacyNextBranches];
+
+  if (publicBranches.length > 0 && evaluateBranchPatterns(branchName, publicBranches).matched) {
+    return BRANCH_CLASS_PUBLIC;
+  }
+
+  if (combinedNonPublicBranches.length > 0 && evaluateBranchPatterns(branchName, combinedNonPublicBranches).matched) {
+    return BRANCH_CLASS_NON_PUBLIC;
+  }
+
+  return BRANCH_CLASS_NONE;
+}
+
+function getBooleanOrNull(value) {
+  if (value === undefined || value === null || value === EMPTY_STRING) {
+    return NULL_VALUE;
+  }
+
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "n", "off"].includes(normalized)) {
+    return false;
+  }
+
+  return NULL_VALUE;
+}
+
+function evaluateBuildType(version, settings) {
+  const explicitPublic = getBooleanOrNull(settings.explicitPublicBuild);
+  const hasSuffix = Boolean(getString(version.suffix));
+
+  if (explicitPublic !== NULL_VALUE) {
+    return {
+      isPublic: explicitPublic,
+      source: BUILD_TYPE_SOURCE_EXPLICIT,
+      branchClass: settings.branchClass || BRANCH_CLASS_NONE,
+      nonPublicGuardrailApplied: !explicitPublic && !hasSuffix
+    };
+  }
+
+  if (settings.branchClass && settings.branchClass !== BRANCH_CLASS_NONE) {
+    return {
+      isPublic: settings.branchClass === BRANCH_CLASS_PUBLIC,
+      source: BUILD_TYPE_SOURCE_BRANCH,
+      branchClass: settings.branchClass,
+      nonPublicGuardrailApplied: settings.branchClass === BRANCH_CLASS_NON_PUBLIC && !hasSuffix
+    };
+  }
+
+  return {
+    isPublic: !hasSuffix,
+    source: BUILD_TYPE_SOURCE_SUFFIX,
+    branchClass: settings.branchClass || BRANCH_CLASS_NONE,
+    nonPublicGuardrailApplied: hasSuffix === false
+  };
+}
+
+function evaluatePushPolicy(version, settings) {
+  const buildType = evaluateBuildType(version, settings);
+  const pushAllowedByBranch = isBranchAllowed(settings.currentBranch, settings.pushBranches);
+  let eligible = settings.pushEnabled;
+  let reason = NULL_VALUE;
+
+  if (!settings.pushEnabled) {
+    eligible = false;
+    reason = PUSH_SKIP_REASON_PUSH_DISABLED;
+  } else if (settings.denyNonPublicPush && !buildType.isPublic) {
+    eligible = false;
+    reason = PUSH_SKIP_REASON_NON_PUBLIC_DENIED;
+  } else if (!pushAllowedByBranch) {
+    eligible = false;
+    reason = settings.currentBranch
+      ? PUSH_SKIP_REASON_BRANCH_NOT_ALLOWED
+      : PUSH_SKIP_REASON_BRANCH_UNKNOWN;
+  }
+
+  return {
+    eligible,
+    reason,
+    buildType,
+    pushAllowedByBranch
+  };
+}
+
+function buildPolicySummary(version, settings, pushPolicy) {
+  const tagComputation = getTagComputation(version, settings);
+  const evaluatedPushPolicy = pushPolicy || evaluatePushPolicy(version, settings);
+
+  return {
+    buildType: tagComputation.buildType.isPublic ? BRANCH_CLASS_PUBLIC : BRANCH_CLASS_NON_PUBLIC,
+    buildTypeSource: tagComputation.buildType.source,
+    branchClass: tagComputation.buildType.branchClass,
+    nonPublicGuardrailApplied: tagComputation.buildType.nonPublicGuardrailApplied,
+    effectiveSuffix: tagComputation.effectiveSuffix,
+    tagKinds: tagComputation.tagKinds,
+    pushEnabled: settings.pushEnabled,
+    denyNonPublicPush: settings.denyNonPublicPush,
+    pushEligible: evaluatedPushPolicy.eligible,
+    pushSkipReason: evaluatedPushPolicy.reason
+  };
+}
+
+function getEffectiveSuffix(version, buildType) {
+  const suffix = getString(version.suffix);
+
+  if (suffix) {
+    return suffix;
+  }
+
+  if (!buildType.isPublic) {
+    return NON_PUBLIC_GUARDRAIL_SUFFIX;
+  }
+
+  return EMPTY_STRING;
+}
+
+function getTagKindsForBuildType(settings, buildType) {
+  const selected = buildType.isPublic ? settings.tagPolicyPublic : settings.tagPolicyNonPublic;
+
+  if (!buildType.isPublic && settings.nonPublicMode === NON_PUBLIC_MODE_FULL_ONLY) {
+    return [TAG_KIND_FULL];
+  }
+
+  return selected;
+}
+
+function getTagComputation(version, settings) {
+  const buildType = evaluateBuildType(version, settings);
+  const effectiveSuffix = getEffectiveSuffix(version, buildType);
+  const tagKinds = getTagKindsForBuildType(settings, buildType);
+  const baseTags = [];
+
+  if (tagKinds.includes(TAG_KIND_FULL)) {
+    pushUnique(baseTags, version.version);
+  }
+
+  if (tagKinds.includes(TAG_KIND_MAJOR) && version.major) {
+    pushUnique(baseTags, `${version.major}${effectiveSuffix}`);
+  }
+
+  if (tagKinds.includes(TAG_KIND_MAJOR_MINOR) && version.major && version.minor) {
+    pushUnique(baseTags, `${version.major}.${version.minor}${effectiveSuffix}`);
+  }
+
+  const aliasComputation = getAliasComputation(version, settings, buildType);
+  const tags = [];
+
+  const transform = aliasComputation.tagTransform;
+  const hasTagTransform = transform && transform.enabled;
+
+  baseTags.forEach(tag => {
+    const transformed = hasTagTransform
+      ? applyAliasFormatting(tag, {
+        prefix: transform.prefix,
+        suffix: transform.suffix,
+        maxLength: transform.maxLength,
+        nonPublicPrefix: transform.nonPublicPrefix,
+        applyNonPublicPrefix: !buildType.isPublic,
+        sanitize: ALIAS_SANITIZE_NONE
+      })
+      : tag;
+
+    pushUnique(tags, transformed);
+  });
+
+  if (settings.latest && (tagKinds.includes(TAG_KIND_LATEST) || buildType.isPublic)) {
+    pushUnique(tags, "latest");
+  }
+
+  aliasComputation.aliases.forEach(aliasTag => pushUnique(tags, aliasTag));
+
+  return {
+    buildType,
+    effectiveSuffix,
+    tagKinds,
+    tags,
+    aliasComputation
+  };
 }
 
 function getDockerSettings(config, env, repoRoot, options = {}) {
@@ -854,7 +1544,15 @@ function getDockerSettings(config, env, repoRoot, options = {}) {
   const login = docker.login || {};
   const push = docker.push || {};
   const tags = docker.tags || {};
+  const tagPolicy = docker.tagPolicy || {};
+  const aliases = docker.aliases || {};
   const cleanup = docker.cleanup || {};
+  const git = config.git || {};
+  const publicBranches = getStringArray(git.publicBranches, []);
+  const nonPublicBranches = getStringArray(git.nonPublicBranches, []);
+  const legacyQaBranches = getStringArray(git.qaBranches, []);
+  const legacyNextBranches = getStringArray(git.nextBranches, []);
+  const combinedNonPublicBranches = [...nonPublicBranches, ...legacyQaBranches, ...legacyNextBranches];
 
   const registry = getString(env[ENV_DOCKER_REGISTRY], getNestedValue(target.registry, docker.targetRegistry));
   const repo = getString(env[ENV_DOCKER_REPOSITORY], getNestedValue(target.repository, docker.targetRepository));
@@ -876,10 +1574,37 @@ function getDockerSettings(config, env, repoRoot, options = {}) {
     file: getString(env[ENV_DOCKERFILE_PATH], getNestedValue(docker.file, docker.dockerfile) || DEFAULT_DOCKERFILE),
     pushEnabled: normalizeBool(env[ENV_DOCKER_PUSH_ENABLED], getNestedValue(push.enabled, docker.pushEnabled)),
     pushBranches,
+    publicBranches,
+    nonPublicBranches: combinedNonPublicBranches,
     currentBranch: branchInfo.branch,
     currentBranchSource: branchInfo.source,
     inputBranch: branchInfo.inputBranch,
     latest: normalizeBool(env[ENV_DOCKER_TAG_LATEST], getNestedValue(tags.latest, docker.tagLatest)),
+    tagPolicyPublic: normalizeTagPolicyKinds(
+      tagPolicy.public,
+      [TAG_KIND_FULL, TAG_KIND_MAJOR_MINOR, TAG_KIND_MAJOR]
+    ),
+    tagPolicyNonPublic: normalizeTagPolicyKinds(
+      tagPolicy.nonPublic,
+      [TAG_KIND_FULL, TAG_KIND_MAJOR_MINOR, TAG_KIND_MAJOR]
+    ),
+    nonPublicMode: getString(docker.nonPublicMode).toLowerCase(),
+    aliasBranch: normalizeBool(aliases.branch, false),
+    aliasSanitizedBranch: normalizeBool(aliases.sanitizedBranch, false),
+    aliasPrefix: getString(aliases.prefix),
+    aliasSuffix: getString(aliases.suffix),
+    aliasMaxLength: normalizePositiveInt(aliases.maxLength, 0),
+    aliasNonPublicPrefix: getString(aliases.nonPublicPrefix, DEFAULT_ALIAS_NON_PUBLIC_PREFIX),
+    aliasRules: normalizeAliasRules(aliases.rules),
+    aliasPolicyEnabled: normalizeBool(aliases.branch, false)
+      || normalizeBool(aliases.sanitizedBranch, false)
+      || Boolean(getString(aliases.prefix))
+      || Boolean(getString(aliases.suffix))
+      || normalizePositiveInt(aliases.maxLength, 0) > 0
+      || normalizeAliasRules(aliases.rules).length > 0,
+    explicitPublicBuild: getNestedValue(getNestedValue(docker.publicBuild, docker.public), docker.build && docker.build.public),
+    denyNonPublicPush: normalizeBool(push.denyNonPublicPush, false),
+    branchClass: classifyBranch(branchInfo.branch, git),
     cleanupLocal: resolveCleanupLocal(env, getNestedValue(cleanup.local, DEFAULT_CLEANUP_LOCAL_MODE)),
     runner: normalizeDockerRunner(env[ENV_DOCKER_RUNNER], normalizeDockerRunner(docker.runner, DEFAULT_DOCKER_RUNNER)),
     platform: getString(env[ENV_DOCKER_PLATFORM], docker.platform),
@@ -1183,17 +1908,145 @@ function runFallbackBuild(repoRoot, version, config, env, outputMode, options = 
 }
 
 function getTags(version, settings) {
-  const suffix = getString(version.suffix);
-  const tags = new Set();
+  return getTagComputation(version, settings).tags;
+}
 
-  tags.add(version.version);
+function dockerTagLocal(repoRoot, version, settings, env, outputMode = OUTPUT_MODE_HUMAN) {
+  const artifact = buildArtifact(version, settings);
+  const references = artifact.image.references;
+  const sourceReference = references[0] || NULL_VALUE;
 
-  if (version.major) tags.add(`${version.major}${suffix}`);
-  if (version.major && version.minor) tags.add(`${version.major}.${version.minor}${suffix}`);
+  if (!sourceReference) {
+    throw new Error("Unable to compute source image reference for tagging");
+  }
 
-  if (settings.latest) tags.add("latest");
+  const requestedReferences = references.slice(1);
+  const taggedReferences = [];
+  const failedReferences = [];
 
-  return [...tags];
+  requestedReferences.forEach(reference => {
+    const result = runCommand(DOCKER_CMD, [DOCKER_TAG, sourceReference, reference], {
+      cwd: repoRoot,
+      env,
+      outputMode
+    });
+
+    if (result.ok) {
+      taggedReferences.push(reference);
+      return;
+    }
+
+    failedReferences.push(reference);
+  });
+
+  let status = STATUS_SUCCESS;
+
+  if (failedReferences.length > 0 && taggedReferences.length > 0) {
+    status = STATUS_PARTIAL;
+  } else if (failedReferences.length > 0) {
+    status = STATUS_FAILED;
+  }
+
+  return {
+    status,
+    artifact,
+    operation: {
+      type: OPERATION_TYPE_TAG,
+      performed: requestedReferences.length > 0,
+      sourceReference,
+      tag: {
+        requestedReferences,
+        taggedReferences,
+        failedReferences
+      }
+    },
+    metadata: buildMetadata(settings)
+  };
+}
+
+function buildPlanResult(version, settings) {
+  const artifact = buildArtifact(version, settings);
+  const pushPolicy = evaluatePushPolicy(version, settings);
+  const policy = buildPolicySummary(version, settings, pushPolicy);
+  const buildType = evaluateBuildType(version, settings);
+  const tagComputation = getTagComputation(version, settings);
+  const publicBranchEvaluation = evaluateBranchPatterns(settings.currentBranch, settings.publicBranches || []);
+  const nonPublicBranchEvaluation = evaluateBranchPatterns(settings.currentBranch, settings.nonPublicBranches || []);
+  const pushBranchEvaluation = evaluateBranchPatterns(settings.currentBranch, settings.pushBranches || []);
+
+  return {
+    artifact,
+    plan: {
+      branch: settings.currentBranch || NULL_VALUE,
+      branchSource: settings.currentBranchSource || UNKNOWN_VALUE,
+      branchClass: policy.branchClass,
+      buildType: policy.buildType,
+      buildTypeSource: policy.buildTypeSource,
+      nonPublicGuardrailApplied: policy.nonPublicGuardrailApplied,
+      tagKinds: policy.tagKinds,
+      push: {
+        enabled: settings.pushEnabled,
+        eligible: pushPolicy.eligible,
+        reason: pushPolicy.reason,
+        allowedBranches: settings.pushBranches
+      },
+      inputs: {
+        version: {
+          value: version.version,
+          full: version.full,
+          suffix: getString(version.suffix),
+          hasSuffix: Boolean(getString(version.suffix))
+        },
+        explicitPublicBuild: settings.explicitPublicBuild,
+        nonPublicMode: settings.nonPublicMode,
+        aliases: {
+          branch: settings.aliasBranch,
+          sanitizedBranch: settings.aliasSanitizedBranch,
+          prefix: settings.aliasPrefix,
+          suffix: settings.aliasSuffix,
+          maxLength: settings.aliasMaxLength,
+          nonPublicPrefix: settings.aliasNonPublicPrefix,
+          rulesConfigured: settings.aliasRules.length
+        },
+        tagPolicy: {
+          public: settings.tagPolicyPublic,
+          nonPublic: settings.tagPolicyNonPublic
+        },
+        pushPolicy: {
+          enabled: settings.pushEnabled,
+          denyNonPublicPush: settings.denyNonPublicPush,
+          allowedBranches: settings.pushBranches
+        }
+      },
+      tagComputation: {
+        tags: tagComputation.tags,
+        effectiveSuffix: tagComputation.effectiveSuffix,
+        tagKinds: tagComputation.tagKinds,
+        aliases: tagComputation.aliasComputation.aliases
+      },
+      aliasPolicy: {
+        enabled: tagComputation.aliasComputation.enabled,
+        selectionMode: tagComputation.aliasComputation.selectionMode,
+        selectedRuleId: tagComputation.aliasComputation.selectedRuleId,
+        nonPublicPrefixApplied: tagComputation.aliasComputation.nonPublicPrefixApplied,
+        globalFormatting: tagComputation.aliasComputation.globalFormatting,
+        rules: tagComputation.aliasComputation.rules
+      },
+      branchMatching: {
+        public: publicBranchEvaluation,
+        nonPublic: nonPublicBranchEvaluation,
+        pushAllowed: pushBranchEvaluation
+      },
+      decisionTrace: {
+        buildTypeFrom: buildType.source,
+        branchClassResolved: buildType.branchClass,
+        guardrailApplied: buildType.nonPublicGuardrailApplied,
+        pushEligible: pushPolicy.eligible,
+        pushSkipReason: pushPolicy.reason
+      }
+    },
+    metadata: buildMetadata(settings)
+  };
 }
 
 function getDockerAuthSettings(env, settings) {
@@ -1321,20 +2174,32 @@ function dockerBuild(repoRoot, version, settings, env, outputMode = OUTPUT_MODE_
 }
 
 function dockerPush(repoRoot, version, settings, env, outputMode = OUTPUT_MODE_HUMAN) {
-  if (!settings.pushEnabled) {
-    console.log("Push disabled");
-    return;
-  }
+  const pushPolicy = evaluatePushPolicy(version, settings);
 
-  if (!isBranchAllowed(settings.currentBranch, settings.pushBranches)) {
-    if (!settings.currentBranch) {
+  if (!pushPolicy.eligible) {
+    if (pushPolicy.reason === PUSH_SKIP_REASON_PUSH_DISABLED) {
+      console.log("Push disabled");
+      return;
+    }
+
+    if (pushPolicy.reason === PUSH_SKIP_REASON_NON_PUBLIC_DENIED) {
+      console.log("Push skipped: non-public pushes are denied by policy");
+      return;
+    }
+
+    if (pushPolicy.reason === PUSH_SKIP_REASON_BRANCH_UNKNOWN) {
       console.log("Push skipped: unable to determine current branch");
       return;
     }
 
-    console.log(
-      `Push skipped: branch '${settings.currentBranch}' does not match [${settings.pushBranches.join(", ")}]`
-    );
+    if (pushPolicy.reason === PUSH_SKIP_REASON_BRANCH_NOT_ALLOWED) {
+      console.log(
+        `Push skipped: branch '${settings.currentBranch}' does not match [${settings.pushBranches.join(", ")}]`
+      );
+      return;
+    }
+
+    console.log("Push disabled");
     return;
   }
 
@@ -1500,33 +2365,31 @@ function executePushDetailed(repoRoot, version, settings, env, commandType, outp
   const requestedReferences = artifact.image.references;
   const pushedReferences = [];
   const failedReferences = [];
+  const pushPolicy = evaluatePushPolicy(version, settings);
+  const policySummary = buildPolicySummary(version, settings, pushPolicy);
   let skipped = false;
   let skipReason = NULL_VALUE;
 
-  if (!settings.pushEnabled) {
+  if (!pushPolicy.eligible) {
     skipped = true;
-    skipReason = "push_disabled";
+    skipReason = pushPolicy.reason;
 
-    if (outputMode === OUTPUT_MODE_HUMAN) {
+    if (outputMode === OUTPUT_MODE_HUMAN && skipReason === PUSH_SKIP_REASON_PUSH_DISABLED) {
       console.log("Push disabled");
     }
-  } else if (!isBranchAllowed(settings.currentBranch, settings.pushBranches)) {
-    skipped = true;
 
-    if (!settings.currentBranch) {
-      skipReason = "branch_unknown";
+    if (outputMode === OUTPUT_MODE_HUMAN && skipReason === PUSH_SKIP_REASON_NON_PUBLIC_DENIED) {
+      console.log("Push skipped: non-public pushes are denied by policy");
+    }
 
-      if (outputMode === OUTPUT_MODE_HUMAN) {
-        console.log("Push skipped: unable to determine current branch");
-      }
-    } else {
-      skipReason = "branch_not_allowed";
+    if (outputMode === OUTPUT_MODE_HUMAN && skipReason === PUSH_SKIP_REASON_BRANCH_UNKNOWN) {
+      console.log("Push skipped: unable to determine current branch");
+    }
 
-      if (outputMode === OUTPUT_MODE_HUMAN) {
-        console.log(
-          `Push skipped: branch '${settings.currentBranch}' does not match [${settings.pushBranches.join(", ")}]`
-        );
-      }
+    if (outputMode === OUTPUT_MODE_HUMAN && skipReason === PUSH_SKIP_REASON_BRANCH_NOT_ALLOWED) {
+      console.log(
+        `Push skipped: branch '${settings.currentBranch}' does not match [${settings.pushBranches.join(", ")}]`
+      );
     }
   } else {
     requestedReferences.forEach(reference => {
@@ -1585,9 +2448,16 @@ function executePushDetailed(repoRoot, version, settings, env, commandType, outp
       },
       policy: {
         pushEnabled: settings.pushEnabled,
+        denyNonPublicPush: settings.denyNonPublicPush,
+        buildType: policySummary.buildType,
+        buildTypeSource: policySummary.buildTypeSource,
+        branchClass: policySummary.branchClass,
+        nonPublicGuardrailApplied: policySummary.nonPublicGuardrailApplied,
         branch: settings.currentBranch || NULL_VALUE,
         branchSource: settings.currentBranchSource || UNKNOWN_VALUE,
-        inputBranch: settings.inputBranch || NULL_VALUE
+        inputBranch: settings.inputBranch || NULL_VALUE,
+        pushEligible: pushPolicy.eligible,
+        pushSkipReason: pushPolicy.reason
       }
     },
     metadata: buildMetadata(settings)
@@ -1619,10 +2489,38 @@ function executeJsonCommand(command, commandArg, root, config, version, env, com
         warnings,
         errors
       };
+    }
+
+    case CMD_PLAN: {
+      const docker = getDockerSettings(config, env, root);
 
       return {
         status: STATUS_SUCCESS,
-        result,
+        result: buildPlanResult(version, docker),
+        warnings,
+        errors
+      };
+    }
+
+    case CMD_TAG: {
+      const docker = getDockerSettings(config, env, root, { requireImageTarget: true });
+      const tagResult = dockerTagLocal(root, version, docker, env, commandOutputMode);
+      const policy = buildPolicySummary(version, docker);
+
+      tagResult.operation.tag.failedReferences.forEach(reference => {
+        errors.push(createError(STATUS_ERROR_CODE_DOCKER_BUILD, `Failed to tag ${reference}`, { reference }));
+      });
+
+      return {
+        status: tagResult.status,
+        result: {
+          artifact: tagResult.artifact,
+          operation: {
+            ...tagResult.operation,
+            policy
+          },
+          metadata: tagResult.metadata
+        },
         warnings,
         errors
       };
@@ -1630,6 +2528,7 @@ function executeJsonCommand(command, commandArg, root, config, version, env, com
 
     case CMD_BUILD: {
       const docker = getDockerSettings(config, env, root, { requireImageTarget: true });
+      const policy = buildPolicySummary(version, docker);
       let removedReferences = [];
 
       withDockerAuth(root, env, docker, authEnv => {
@@ -1647,6 +2546,7 @@ function executeJsonCommand(command, commandArg, root, config, version, env, com
           operation: {
             type: CMD_BUILD,
             performed: true,
+            policy,
             cleanup: {
               enabled: docker.cleanupLocal,
               removedReferences
@@ -1699,6 +2599,7 @@ function executeJsonCommand(command, commandArg, root, config, version, env, com
 
     case CMD_ALL: {
       const docker = getDockerSettings(config, env, root, { requireImageTarget: true });
+      const policy = buildPolicySummary(version, docker);
       const stageNames = getStageNames(config, env);
 
       if (stageNames.length > 0) {
@@ -1760,6 +2661,7 @@ function executeJsonCommand(command, commandArg, root, config, version, env, com
             operation: {
               type: CMD_BUILD,
               performed: true,
+              policy,
               cleanup: {
                 enabled: docker.cleanupLocal,
                 removedReferences: []
@@ -1842,19 +2744,23 @@ USAGE:
 
 COMMANDS:
   build          Build Docker image(s) with version tags (default)
+  tag            Tag local image using computed policy tags
   stage <name>   Build a named stage using docker --target + --output
   target <name>  Alias for stage command (Docker-compatible phrase)
   stage all      Run configured stages sequentially (definition in dockship.json)
   ship, push     Push existing image tags to registry
   all            Build image(s), then push them to registry
+  plan           Show deterministic build/push plan without docker mutation
   version        Output resolved version information as JSON
   tags           Output computed Docker tags as JSON
   help, --help   Show this help menu
 
 EXAMPLES:
   dock build              # Build image with automatic version detection
+  dock tag                # Retag local image using computed tag policy
   dock stage validate     # Build Dockerfile stage named validate
   dock stage all          # Run all configured stages sequentially
+  dock plan               # Preview branch-aware tags and push eligibility
   dock ship               # Push image to configured registry
   dock all                # Build and push in one command
   dock version            # Display resolved version info
@@ -2109,6 +3015,36 @@ function main() {
     case CMD_TAGS: {
       const docker = getDockerSettings(config, process.env, root);
       console.log(JSON.stringify(getTags(version, docker), null, 2));
+      break;
+    }
+
+    case CMD_PLAN: {
+      const docker = getDockerSettings(config, process.env, root);
+      const result = buildPlanResult(version, docker);
+      const push = result.plan.push;
+
+      console.log(`Branch: ${result.plan.branch || UNKNOWN_VALUE}`);
+      console.log(`Public: ${String(result.plan.buildType === BRANCH_CLASS_PUBLIC)}`);
+      console.log(`Version: ${version.version}`);
+      console.log("Tags:");
+      result.artifact.image.tags.forEach(tag => console.log(`  - ${tag}`));
+      console.log(`Push: ${String(push.eligible)}`);
+
+      if (!push.eligible && push.reason) {
+        console.log(`Push reason: ${push.reason}`);
+      }
+
+      break;
+    }
+
+    case CMD_TAG: {
+      const docker = getDockerSettings(config, process.env, root, { requireImageTarget: true });
+      const tagResult = dockerTagLocal(root, version, docker, process.env, OUTPUT_MODE_HUMAN);
+
+      if (tagResult.status === STATUS_FAILED || tagResult.status === STATUS_PARTIAL) {
+        process.exitCode = EXIT_FAILED;
+      }
+
       break;
     }
 

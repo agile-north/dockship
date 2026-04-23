@@ -90,6 +90,8 @@ Operation type values:
 - build
 - push
 - ship
+- tag
+- plan
 
 ### Exit Codes
 
@@ -202,6 +204,144 @@ Returns computed tags and references.
 }
 ```
 
+Tags include semantic tags and optional alias tags based on policy settings. Some alias rules can also rewrite the existing semantic tags themselves using `tagPrefix`, `tagSuffix`, `tagMaxLength`, or `tagNonPublicPrefix`.
+
+---
+
+### plan
+
+Computes deterministic behavior without mutating Docker state.
+
+```json
+{
+  "artifact": { ... },
+  "plan": {
+    "branch": "feature/demo",
+    "branchSource": "env",
+    "branchClass": "non-public",
+    "buildType": "non-public",
+    "buildTypeSource": "branch.classification",
+    "nonPublicGuardrailApplied": true,
+    "tagKinds": ["full", "majorMinor", "major"],
+    "push": {
+      "enabled": true,
+      "eligible": false,
+      "reason": "non_public_denied",
+      "allowedBranches": ["main", "release/*"]
+    },
+    "inputs": {
+      "version": {
+        "value": "1.4.2",
+        "full": "1.4.2",
+        "suffix": "",
+        "hasSuffix": false
+      },
+      "explicitPublicBuild": null,
+      "nonPublicMode": "",
+      "aliases": {
+        "branch": false,
+        "sanitizedBranch": false,
+        "prefix": "",
+        "suffix": "",
+        "maxLength": 0,
+        "nonPublicPrefix": "np-",
+        "rulesConfigured": 2
+      },
+      "tagPolicy": {
+        "public": ["full", "majorMinor", "major"],
+        "nonPublic": ["full", "majorMinor", "major"]
+      },
+      "pushPolicy": {
+        "enabled": true,
+        "denyNonPublicPush": false,
+        "allowedBranches": ["main", "release/*"]
+      }
+    },
+    "tagComputation": {
+      "tags": ["1.4.2", "1", "1.4", "np-feat-feature-new-api"],
+      "effectiveSuffix": "",
+      "tagKinds": ["full", "majorMinor", "major"],
+      "aliases": ["np-feat-feature-new-api"]
+    },
+    "aliasPolicy": {
+      "enabled": true,
+      "selectionMode": "first-match-wins",
+      "selectedRuleId": "feature-rule",
+      "nonPublicPrefixApplied": true,
+      "globalFormatting": {
+        "prefix": "",
+        "suffix": "",
+        "maxLength": 0,
+        "nonPublicPrefix": "np-"
+      },
+      "rules": [
+        {
+          "id": "release-rule",
+          "match": "release/*",
+          "type": "wildcard",
+          "valid": true,
+          "matched": false,
+          "selected": false,
+          "captures": [],
+          "baseCandidates": [],
+          "aliases": []
+        },
+        {
+          "id": "feature-rule",
+          "match": "feature/*",
+          "type": "wildcard",
+          "valid": true,
+          "matched": true,
+          "selected": true,
+          "captures": [],
+          "baseCandidates": ["feat-feature-new-api"],
+          "aliases": ["np-feat-feature-new-api"]
+        }
+      ]
+    },
+    "branchMatching": {
+      "public": {
+        "configured": true,
+        "matched": false,
+        "matchedPatterns": [],
+        "invalidPatterns": []
+      },
+      "nonPublic": {
+        "configured": true,
+        "matched": true,
+        "matchedPatterns": ["feature/*"],
+        "invalidPatterns": []
+      },
+      "pushAllowed": {
+        "configured": true,
+        "matched": false,
+        "matchedPatterns": [],
+        "invalidPatterns": []
+      }
+    },
+    "decisionTrace": {
+      "buildTypeFrom": "branch.classification",
+      "branchClassResolved": "non-public",
+      "guardrailApplied": true,
+      "pushEligible": false,
+      "pushSkipReason": "non_public_denied"
+    }
+  },
+  "metadata": {
+    "platforms": [],
+    "runner": "build"
+  }
+}
+```
+
+Pattern matching notes:
+
+- wildcard patterns support `*`
+- regex patterns are supported using `regex:` prefix, for example `regex:^release\/\d+\.\d+$`
+- invalid regex patterns are reported under `branchMatching.*.invalidPatterns`
+- alias rule evaluation trace (including non-matches) is reported under `plan.aliasPolicy.rules`
+- alias rule templates support `$BRANCH`, `$BRANCH_SANITIZED`, and regex captures `$1..$9`
+
 ---
 
 ### build
@@ -215,6 +355,19 @@ Builds the Docker image locally.
   "operation": {
     "type": "build",
     "performed": true,
+
+    "policy": {
+      "buildType": "public",
+      "buildTypeSource": "version.suffix",
+      "branchClass": "none",
+      "nonPublicGuardrailApplied": false,
+      "effectiveSuffix": "",
+      "tagKinds": ["full", "majorMinor", "major"],
+      "pushEnabled": false,
+      "denyNonPublicPush": false,
+      "pushEligible": false,
+      "pushSkipReason": "push_disabled"
+    },
 
     "cleanup": {
       "enabled": true,
@@ -265,9 +418,16 @@ Pushes image to registry.
 
     "policy": {
       "pushEnabled": true,
+      "denyNonPublicPush": false,
+      "buildType": "public",
+      "buildTypeSource": "version.suffix",
+      "branchClass": "none",
+      "nonPublicGuardrailApplied": false,
       "branch": "main",
       "branchSource": "env",
-      "inputBranch": "refs/heads/main"
+      "inputBranch": "refs/heads/main",
+      "pushEligible": true,
+      "pushSkipReason": null
     }
   },
 
@@ -286,6 +446,45 @@ Rules:
 - If `operation.push.failedReferences` is non-empty and `operation.push.pushedReferences` is non-empty, status MUST be `partial`.
 - If `operation.push.failedReferences` is non-empty and `operation.push.pushedReferences` is empty, status MUST be `failed`.
 - If any `operation.push.requestedReferences` are missing from both `operation.push.pushedReferences` and `operation.push.failedReferences`, status MUST be `failed`.
+- `operation.skipReason` MAY be `non_public_denied` when push policy blocks non-public artifacts.
+
+---
+
+### tag
+
+Adds computed secondary tags to an existing local image reference.
+
+```json
+{
+  "artifact": { ... },
+  "operation": {
+    "type": "tag",
+    "performed": true,
+    "sourceReference": "registry.example.com/client/my-app:1.4.2",
+    "tag": {
+      "requestedReferences": ["registry.example.com/client/my-app:1"],
+      "taggedReferences": ["registry.example.com/client/my-app:1"],
+      "failedReferences": []
+    },
+    "policy": {
+      "buildType": "public",
+      "buildTypeSource": "version.suffix",
+      "branchClass": "none",
+      "nonPublicGuardrailApplied": false,
+      "effectiveSuffix": "",
+      "tagKinds": ["full", "majorMinor", "major"],
+      "pushEnabled": false,
+      "denyNonPublicPush": false,
+      "pushEligible": false,
+      "pushSkipReason": "push_disabled"
+    }
+  },
+  "metadata": {
+    "platforms": [],
+    "runner": "build"
+  }
+}
+```
 
 ---
 
