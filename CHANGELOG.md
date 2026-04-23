@@ -30,6 +30,13 @@ Legacy flat keys are still supported as compatibility aliases:
 * `docker.pushBranches` → `docker.push.branches`
 * `docker.tagLatest` → `docker.tags.latest`
 
+## [1.10.4](https://github.com/agile-north/dockship/compare/v1.10.3...v1.10.4) (2026-04-23)
+
+
+### Bug Fixes
+
+* Preserve prerelease suffixes on generated Docker major and major.minor tags ([ec6ebeb](https://github.com/agile-north/dockship/commit/ec6ebeb913845e35e937470ecb7c4627eaf24cbc))
+
 ## [1.10.3](https://github.com/agile-north/dockship/compare/v1.10.2...v1.10.3) (2026-03-24)
 
 
