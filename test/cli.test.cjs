@@ -26,6 +26,10 @@ const CLI_ENV_KEYS = [
   "DOCKERFILE_PATH",
   "DOCKER_PLATFORM",
   "DOCKER_BUILD_ARGS",
+  "DOCKER_BUILD_ARGS_FILE",
+  "DOCKER_SECRETS",
+  "DOCKER_SECRET_API",
+  "DOCKER_SECRET_NPM_TOKEN",
   "DOCKER_RUNNER",
   "DOCKER_LOGIN_USERNAME",
   "DOCKER_LOGIN_PASSWORD",
@@ -1784,6 +1788,141 @@ test("build command passes expected docker arguments", t => {
     "ghcr.io/acme/widget:latest",
     "."
   ]);
+});
+
+test("build command supports docker secrets from config when using buildx", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+  writeText(path.join(repoRoot, "cert.pem"), "placeholder");
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      },
+      runner: "buildx",
+      secrets: {
+        npm_token: {
+          env: "NPM_TOKEN"
+        },
+        cert: {
+          file: "./cert.pem"
+        }
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, "build", {
+    env: {
+      NPM_TOKEN: "token-value"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected cli build command to succeed");
+  assert.equal(result.dockerCommands[0][0], "buildx");
+  assert.ok(result.dockerCommands[0].includes("--secret"));
+  assert.ok(result.dockerCommands[0].includes("id=npm_token,env=NPM_TOKEN"));
+  assert.ok(result.dockerCommands[0].includes("id=cert,src=./cert.pem"));
+});
+
+test("build command allows DOCKER_SECRETS and DOCKER_SECRET_<ID> overrides", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      },
+      runner: "buildx",
+      secrets: {
+        should_not_apply: {
+          env: "IGNORED_SECRET"
+        }
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, "build", {
+    env: {
+      DOCKER_SECRETS: JSON.stringify({
+        api: {
+          env: "API_TOKEN"
+        }
+      }),
+      DOCKER_SECRET_API: "override-token"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected cli build command to succeed");
+  assert.ok(result.dockerCommands[0].includes("id=api,env=DOCKER_SECRET_API"));
+  assert.ok(!result.dockerCommands[0].includes("id=api,env=API_TOKEN"));
+  assert.ok(!result.dockerCommands[0].includes("id=should_not_apply,env=IGNORED_SECRET"));
+});
+
+test("build command fails when secrets are configured but resolved runner is not buildx", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      },
+      runner: "build",
+      secrets: {
+        npm_token: {
+          env: "NPM_TOKEN"
+        }
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, "build", {
+    env: {
+      NPM_TOKEN: "token-value"
+    }
+  });
+
+  assert.equal(result.status, 1, "Expected build to fail when secrets are used with runner=build");
+  assert.match(result.stderr, /Docker build secrets require runner 'buildx'/);
+});
+
+test("build command supports DOCKER_BUILD_ARGS_FILE env override", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot);
+  writeJson(path.join(repoRoot, "build-args.json"), {
+    FROM_FILE: "yes"
+  });
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      target: {
+        registry: "ghcr.io",
+        repository: "acme/widget"
+      },
+      buildArgs: {
+        FROM_CONFIG: "ignored"
+      }
+    }
+  });
+
+  const result = runCliMain(repoRoot, "build", {
+    env: {
+      DOCKER_BUILD_ARGS_FILE: path.join(repoRoot, "build-args.json")
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr || "Expected cli build command to succeed");
+  assert.ok(result.dockerCommands[0].includes("FROM_FILE=yes"));
+  assert.ok(!result.dockerCommands[0].includes("FROM_CONFIG=ignored"));
 });
 
 test("stage command executes configured stage target and output", t => {

@@ -361,6 +361,10 @@ Configuration precedence is:
     "buildTarget": "export-stage",        // Optional: docker build --target
     "buildOutput": "type=local,dest=./out", // Optional: docker build --output
     "buildArgs": { "ENV": "prod" },       // Optional: extra docker build args
+    "secrets": {
+      "npm_token": { "env": "NPM_TOKEN" },
+      "signing_key": { "file": "./secrets/signing.key" }
+    },
     "stages": {
       "validate": {
         "target": "validate",
@@ -413,7 +417,8 @@ Configuration precedence is:
 | `docker.platform` | string | empty | `DOCKER_PLATFORM` | Passed to `docker build --platform` |
 | `docker.buildTarget` | string | empty | `DOCKER_BUILD_TARGET` | Passed to `docker build --target` |
 | `docker.buildOutput` | string or string[] | empty | `DOCKER_BUILD_OUTPUT` | Passed to `docker build --output`; this may be `type=local,dest=...` or other buildx output spec |
-| `docker.buildArgs` | object | `{}` | `DOCKER_BUILD_ARGS` | Key/value pairs passed as `--build-arg KEY=value`; appended before the auto-generated `APP_VERSION` build arg. Env var accepts JSON (`{"K":"v"}`) or semicolon-delimited `KEY=value;KEY2=value2` |
+| `docker.buildArgs` | object | `{}` | `DOCKER_BUILD_ARGS`, `DOCKER_BUILD_ARGS_FILE` | Key/value pairs passed as `--build-arg KEY=value`; appended before the auto-generated `APP_VERSION` build arg. `DOCKER_BUILD_ARGS` accepts JSON (`{"K":"v"}`) or semicolon-delimited `KEY=value;KEY2=value2`. `DOCKER_BUILD_ARGS_FILE` points to a JSON file containing a build-args object |
+| `docker.secrets` | object | `{}` | `DOCKER_SECRETS`, `DOCKER_SECRET_<ID>` | BuildKit secrets mapped to `--secret`. Each entry supports `{ "env": "ENV_NAME" }` or `{ "file": "./path" }`. Requires `docker.runner` `buildx` (or `auto` resolving to buildx). `DOCKER_SECRETS` accepts JSON object and `DOCKER_SECRET_<ID>` overrides by id |
 | `docker.stages` | object | `{}` | n/a | Stage definitions for `dock stage <name>` and `dock stage all`. Each stage may set `target`/`output`/`runner` to override `docker.buildTarget`, `docker.buildOutput`, `docker.runner` |
 | `docker.stageFallback` | boolean | `true` | n/a | When true, `dock stage all` runs a final no-target build after configured stages (default). |
 | `git.publicBranches` | string[] | `[]` | n/a | Optional patterns classifying builds as public |
@@ -589,23 +594,77 @@ Alias rule config example:
 
 `branch`/`sanitizedBranch` toggles and `rules` are additive: both can be enabled at the same time.
 
-To export files or artifacts from intermediate Dockerfile stages, set the runner to `buildx` (or `auto`) and pass `--target` and `--output` via `DOCKER_BUILD_ARGS`.
+To export files or artifacts from intermediate Dockerfile stages, set the runner to `buildx` (or `auto`) and configure target/output using `DOCKER_BUILD_TARGET` and `DOCKER_BUILD_OUTPUT`.
 
 Example:
 
 ```bash
 DOCKER_RUNNER=buildx \
-DOCKER_BUILD_ARGS='--target export-stage;--output=type=local,dest=./out' \
+DOCKER_BUILD_TARGET=export-stage \
+DOCKER_BUILD_OUTPUT='type=local,dest=./out' \
 npx dock build
 ```
 
-To export files or artifacts from intermediate Dockerfile stages, set the runner to `buildx` (or `auto`) and pass `--target` and `--output` via `DOCKER_BUILD_ARGS`.
+### BuildKit Secrets (env and file)
+
+Dockship maps `docker.secrets` (or `DOCKER_SECRETS`) to Docker BuildKit `--secret` flags.
+
+- `{ "env": "ENV_NAME" }` becomes `--secret id=<id>,env=ENV_NAME`
+- `{ "file": "./path" }` becomes `--secret id=<id>,src=./path`
+
+Important behavior:
+
+- secrets require `docker.runner` `buildx` (or `auto` resolving to `buildx`)
+- secret values are provided from host/CI environment or files at build time
+- secrets are not copied into the Docker build context by dockship
+
+Example `dockship.json`:
+
+```json
+{
+  "docker": {
+    "runner": "buildx",
+    "secrets": {
+      "npm_token": { "env": "NPM_TOKEN" },
+      "signing_key": { "file": "./secrets/signing.key" }
+    }
+  }
+}
+```
+
+GitHub Actions note: GitHub does not automatically expose secrets as `./secrets/*` files. Secrets are exposed as workflow expressions and environment variables unless you explicitly write them to files.
+
+GitHub Actions (env-backed secret):
+
+```yaml
+- name: Build with dockship and BuildKit secret
+  run: npx dock build
+  env:
+    DOCKER_RUNNER: buildx
+    DOCKER_TARGET_REGISTRY: ${{ secrets.REGISTRY }}
+    DOCKER_TARGET_REPOSITORY: my-org/my-app
+    NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+```
+
+Azure DevOps (file-backed secret):
+
+```yaml
+- script: |
+    mkdir -p .secrets
+    printf "%s" "$(SigningKey)" > .secrets/signing.key
+    npx dock build
+  env:
+    DOCKER_RUNNER: buildx
+    DOCKER_TARGET_REGISTRY: $(DockerRegistry)
+    DOCKER_TARGET_REPOSITORY: my-org/my-app
+```
 
 Example:
 
 ```bash
 DOCKER_RUNNER=buildx \
-DOCKER_BUILD_ARGS='--target export-stage;--output=type=local,dest=./out' \
+DOCKER_SECRETS='{"npm_token":{"env":"NPM_TOKEN"}}' \
+NPM_TOKEN='token-value' \
 npx dock build
 ```
 
@@ -1237,6 +1296,9 @@ Version from Node.js:
 - `DOCKER_STAGES` – JSON object to override `docker.stages` for dynamic stage pipelines
 - `DOCKER_PLATFORM` – override `docker.platform`
 - `DOCKER_BUILD_ARGS` – build args as JSON (`{"ENV":"prod"}`) or semicolon-delimited `KEY=value;KEY2=value2`; overrides `docker.buildArgs`
+- `DOCKER_BUILD_ARGS_FILE` – path to JSON file containing build args object; overrides `docker.buildArgs`
+- `DOCKER_SECRETS` – JSON object mapping secret ids to `{ "env": "ENV_NAME" }` or `{ "file": "./path" }`; overrides `docker.secrets`
+- `DOCKER_SECRET_<ID>` – direct env secret override for a secret id (`DOCKER_SECRET_NPM_TOKEN=...` becomes `--secret id=npm_token,env=DOCKER_SECRET_NPM_TOKEN`)
 - `NPM_TOKEN` – for private npm (if using @agile-north providers)
 
 ### Provider-Specific

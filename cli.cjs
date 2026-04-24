@@ -71,6 +71,9 @@ const ENV_DOCKER_CONTEXT = "DOCKER_CONTEXT";
 const ENV_DOCKERFILE_PATH = "DOCKERFILE_PATH";
 const ENV_DOCKER_PLATFORM = "DOCKER_PLATFORM";
 const ENV_DOCKER_BUILD_ARGS = "DOCKER_BUILD_ARGS";
+const ENV_DOCKER_BUILD_ARGS_FILE = "DOCKER_BUILD_ARGS_FILE";
+const ENV_DOCKER_SECRETS = "DOCKER_SECRETS";
+const ENV_DOCKER_SECRET_PREFIX = "DOCKER_SECRET_";
 const ENV_DOCKER_BUILD_TARGET = "DOCKER_BUILD_TARGET";
 const ENV_DOCKER_BUILD_OUTPUT = "DOCKER_BUILD_OUTPUT";
 const ENV_DOCKER_RUNNER = "DOCKER_RUNNER";
@@ -124,6 +127,7 @@ const DOCKER_FLAG_TAG = "-t";
 const DOCKER_FLAG_FILE = "-f";
 const DOCKER_FLAG_PLATFORM = "--platform";
 const DOCKER_FLAG_BUILD_ARG = "--build-arg";
+const DOCKER_FLAG_SECRET = "--secret";
 const DOCKER_FLAG_PROGRESS = "--progress";
 const DOCKER_FLAG_USERNAME = "--username";
 const DOCKER_FLAG_PASSWORD_STDIN = "--password-stdin";
@@ -247,6 +251,7 @@ function getDefaultBuildConfig() {
       buildTarget: EMPTY_STRING,
       buildOutput: EMPTY_STRING,
       buildArgs: {},
+      secrets: {},
       build: {
         public: NULL_VALUE
       }
@@ -761,6 +766,162 @@ function parseBuildArgsEnv(value) {
   });
 }
 
+function parseBuildArgsObject(obj, sourceName) {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+    throw new Error(`${sourceName} must be a JSON object of KEY=value pairs`);
+  }
+
+  return Object.entries(obj).flatMap(([k, v]) => [DOCKER_FLAG_BUILD_ARG, `${k}=${v}`]);
+}
+
+function parseBuildArgsFile(filePath) {
+  const resolvedPath = path.resolve(filePath);
+
+  if (!fileExists(resolvedPath)) {
+    throw new Error(`${ENV_DOCKER_BUILD_ARGS_FILE} file not found: ${resolvedPath}`);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(readText(resolvedPath));
+  } catch {
+    throw new Error(`${ENV_DOCKER_BUILD_ARGS_FILE} must point to a valid JSON file`);
+  }
+
+  return parseBuildArgsObject(parsed, ENV_DOCKER_BUILD_ARGS_FILE);
+}
+
+function normalizeSecretId(value, sourceName) {
+  const id = getString(value).trim().toLowerCase();
+
+  if (!id) {
+    throw new Error(`${sourceName} includes an empty secret id`);
+  }
+
+  return id;
+}
+
+function normalizeSecretSpec(rawSpec, id, sourceName) {
+  if (typeof rawSpec === "string") {
+    const envName = getString(rawSpec);
+
+    if (!envName) {
+      throw new Error(`${sourceName} secret '${id}' has an empty env reference`);
+    }
+
+    return {
+      id,
+      type: "env",
+      envName
+    };
+  }
+
+  if (!rawSpec || typeof rawSpec !== "object" || Array.isArray(rawSpec)) {
+    throw new Error(`${sourceName} secret '${id}' must be a string env name or an object with env/file`);
+  }
+
+  const envName = getString(rawSpec.env);
+  const filePath = getString(rawSpec.file);
+
+  if (envName && filePath) {
+    throw new Error(`${sourceName} secret '${id}' cannot set both env and file`);
+  }
+
+  if (envName) {
+    return {
+      id,
+      type: "env",
+      envName
+    };
+  }
+
+  if (filePath) {
+    return {
+      id,
+      type: "file",
+      filePath
+    };
+  }
+
+  throw new Error(`${sourceName} secret '${id}' must define env or file`);
+}
+
+function parseSecretsObject(obj, sourceName) {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+    throw new Error(`${sourceName} must be a JSON object mapping secret ids to env/file definitions`);
+  }
+
+  return Object.entries(obj).map(([rawId, rawSpec]) => {
+    const id = normalizeSecretId(rawId, sourceName);
+    return normalizeSecretSpec(rawSpec, id, sourceName);
+  });
+}
+
+function parseBuildSecretsEnv(value) {
+  let parsed;
+
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error(`${ENV_DOCKER_SECRETS} must be valid JSON`);
+  }
+
+  return parseSecretsObject(parsed, ENV_DOCKER_SECRETS);
+}
+
+function parseDirectSecretEnvOverrides(env) {
+  const overrides = [];
+
+  Object.keys(env || {}).forEach(key => {
+    if (!key.startsWith(ENV_DOCKER_SECRET_PREFIX)) {
+      return;
+    }
+
+    const suffix = key.slice(ENV_DOCKER_SECRET_PREFIX.length);
+    const id = normalizeSecretId(suffix, ENV_DOCKER_SECRET_PREFIX);
+
+    if (!getString(env[key])) {
+      return;
+    }
+
+    overrides.push({
+      id,
+      type: "env",
+      envName: key
+    });
+  });
+
+  return overrides;
+}
+
+function normalizeBuildSecretFlags(secrets) {
+  return secrets.flatMap(secret => {
+    if (secret.type === "env") {
+      return [DOCKER_FLAG_SECRET, `id=${secret.id},env=${secret.envName}`];
+    }
+
+    return [DOCKER_FLAG_SECRET, `id=${secret.id},src=${secret.filePath}`];
+  });
+}
+
+function resolveBuildSecrets(env, docker) {
+  const envValue = getString(env[ENV_DOCKER_SECRETS]);
+  const configuredSecrets = envValue
+    ? parseBuildSecretsEnv(envValue)
+    : parseSecretsObject(docker.secrets || {}, "docker.secrets");
+
+  const byId = new Map();
+  configuredSecrets.forEach(secret => {
+    byId.set(secret.id, secret);
+  });
+
+  parseDirectSecretEnvOverrides(env).forEach(secret => {
+    byId.set(secret.id, secret);
+  });
+
+  return normalizeBuildSecretFlags(Array.from(byId.values()));
+}
+
 function resolveBuildOutput(env, docker) {
   const envValue = getString(env[ENV_DOCKER_BUILD_OUTPUT]);
 
@@ -789,11 +950,18 @@ function resolveBuildArgs(env, docker) {
     return parseBuildArgsEnv(envValue);
   }
 
-  // Priority 2: docker.buildArgs in config (object or legacy raw string)
+  // Priority 2: DOCKER_BUILD_ARGS_FILE env var (path to JSON object)
+  const envArgsFile = getString(env[ENV_DOCKER_BUILD_ARGS_FILE]);
+
+  if (envArgsFile) {
+    return parseBuildArgsFile(envArgsFile);
+  }
+
+  // Priority 3: docker.buildArgs in config (object or legacy raw string)
   const configArgs = docker.buildArgs;
 
   if (configArgs !== null && configArgs !== undefined && typeof configArgs === "object") {
-    return Object.entries(configArgs).flatMap(([k, v]) => [DOCKER_FLAG_BUILD_ARG, `${k}=${v}`]);
+    return parseBuildArgsObject(configArgs, "docker.buildArgs");
   }
 
   if (typeof configArgs === "string" && configArgs) {
@@ -2087,6 +2255,7 @@ function getDockerSettings(config, env, repoRoot, options = {}) {
     buildTarget: getString(env[ENV_DOCKER_BUILD_TARGET], docker.buildTarget || ""),
     buildOutputFlags: resolveBuildOutput(env, docker),
     buildArgFlags: resolveBuildArgs(env, docker),
+    buildSecretFlags: resolveBuildSecrets(env, docker),
   };
 }
 
@@ -2618,6 +2787,10 @@ function dockerBuild(repoRoot, version, settings, env, outputMode = OUTPUT_MODE_
     ? [DOCKER_BUILDX, DOCKER_BUILD]
     : [DOCKER_BUILD];
 
+  if (settings.buildSecretFlags && settings.buildSecretFlags.length > 0 && resolvedRunner !== DOCKER_RUNNER_BUILDX) {
+    throw new Error("Docker build secrets require runner 'buildx'. Set docker.runner to 'buildx' or DOCKER_RUNNER=buildx.");
+  }
+
   const args = [
     ...buildRunnerArgs,
     DOCKER_FLAG_PROGRESS,
@@ -2636,6 +2809,10 @@ function dockerBuild(repoRoot, version, settings, env, outputMode = OUTPUT_MODE_
 
   if (settings.buildOutputFlags && settings.buildOutputFlags.length) {
     args.push("--output", ...settings.buildOutputFlags);
+  }
+
+  if (settings.buildSecretFlags && settings.buildSecretFlags.length) {
+    args.push(...settings.buildSecretFlags);
   }
 
   args.push(...settings.buildArgFlags);
@@ -3268,6 +3445,9 @@ ENVIRONMENT VARIABLES:
   DOCKSHIP_STRICT_CONFIG      Fail fast on invalid/legacy config keys (true/false)
   DOCKER_PLATFORM             Target platform (e.g., linux/amd64)
   DOCKER_BUILD_ARGS           Build args as KEY=value pairs
+  DOCKER_BUILD_ARGS_FILE      Path to JSON file containing build args object
+  DOCKER_SECRETS              Build secrets as JSON object (id -> env/file)
+  DOCKER_SECRET_<ID>          Direct secret env override (maps to --secret id=<id>,env=<var>)
   DOCKER_LOGIN_USERNAME       Optional registry login username
   DOCKER_LOGIN_PASSWORD       Optional registry login password/token
   DOCKER_LOGIN_REGISTRY       Optional login registry override
