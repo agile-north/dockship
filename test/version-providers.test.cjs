@@ -17,6 +17,7 @@ const {
 const SAMPLE_PACKAGE_NAME = "sample-app";
 const PROCESS_MODULE_PATH = require.resolve("../lib/version/process.cjs");
 const NBGV_PROVIDER_PATH = require.resolve("../lib/version/providers/nbgv/index.cjs");
+const GITVERSION_PROVIDER_PATH = require.resolve("../lib/version/providers/gitversion/index.cjs");
 const DOTNET_PROVIDER_PATH = require.resolve("../lib/version/providers/dotnet/index.cjs");
 const envProvider = require("../lib/version/providers/env/index.cjs");
 
@@ -74,6 +75,36 @@ function withMockedNbgvProvider(processExports, callback) {
 
     if (originalProviderModule) {
       require.cache[NBGV_PROVIDER_PATH] = originalProviderModule;
+    }
+  }
+}
+
+function withMockedGitVersionProvider(processExports, callback) {
+  const originalProcessModule = require.cache[PROCESS_MODULE_PATH];
+  const originalProviderModule = require.cache[GITVERSION_PROVIDER_PATH];
+
+  delete require.cache[GITVERSION_PROVIDER_PATH];
+  require.cache[PROCESS_MODULE_PATH] = {
+    id: PROCESS_MODULE_PATH,
+    filename: PROCESS_MODULE_PATH,
+    loaded: true,
+    exports: processExports
+  };
+
+  try {
+    const provider = require(GITVERSION_PROVIDER_PATH);
+    return callback(provider);
+  } finally {
+    delete require.cache[GITVERSION_PROVIDER_PATH];
+
+    if (originalProcessModule) {
+      require.cache[PROCESS_MODULE_PATH] = originalProcessModule;
+    } else {
+      delete require.cache[PROCESS_MODULE_PATH];
+    }
+
+    if (originalProviderModule) {
+      require.cache[GITVERSION_PROVIDER_PATH] = originalProviderModule;
     }
   }
 }
@@ -473,6 +504,177 @@ test("nbgv provider resolves versions through docker output", t => {
   });
 });
 
+test("gitversion provider resolves semver and suffix from gitversion output", t => {
+  const repoRoot = createTempRepo(t);
+
+  writeText(path.join(repoRoot, "GitVersion.yml"), "next-version: 1.0.0\n");
+
+  const versionInfo = withMockedGitVersionProvider({
+    commandExists(command) {
+      return command === "gitversion";
+    },
+    tryExec(command) {
+      assert.equal(command, "gitversion");
+
+      return {
+        ok: true,
+        stdout: JSON.stringify({
+          FullSemVer: "1.2.3-beta.1+5",
+          SemVer: "1.2.3-beta.1",
+          FullVersion: "1.2.3-beta.1+5",
+          Major: 1,
+          Minor: 2,
+          Patch: 3,
+          AssemblySemVer: "1.2.3.0",
+          InformationalVersion: "1.2.3-beta.1+5",
+          NuGetVersionV2: "1.2.3-beta0001"
+        }),
+        stderr: ""
+      };
+    }
+  }, provider => provider.resolveVersion({
+    repoRoot,
+    providerConfig: {},
+    env: {}
+  }));
+
+  assertVersionFields(versionInfo, {
+    source: "gitversion",
+    version: "1.2.3-beta.1",
+    full: "1.2.3",
+    major: "1",
+    minor: "2",
+    build: "3",
+    suffix: "-beta.1",
+    semVer2: "1.2.3-beta.1+5",
+    assemblyVersion: "1.2.3.0",
+    informationalVersion: "1.2.3-beta.1+5",
+    nuGetPackageVersion: "1.2.3-beta0001"
+  });
+});
+
+test("gitversion provider falls back to docker when enabled", t => {
+  const repoRoot = createTempRepo(t);
+
+  writeText(path.join(repoRoot, "GitVersion.yml"), "next-version: 1.0.0\n");
+
+  const versionInfo = withMockedGitVersionProvider({
+    commandExists(command) {
+      if (command === "gitversion") {
+        return false;
+      }
+
+      return command === "docker";
+    },
+    tryExec(command, args) {
+      assert.equal(command, "docker");
+      assert.ok(args.includes("/repo"), "Expected docker args to include /repo target path");
+      assert.ok(args.includes("-output"), "Expected docker args to use dash-style output switch");
+
+      return {
+        ok: true,
+        stdout: JSON.stringify({
+          FullSemVer: "2.4.6-rc.1+9",
+          SemVer: "2.4.6-rc.1",
+          FullVersion: "2.4.6-rc.1+9",
+          Major: 2,
+          Minor: 4,
+          Patch: 6
+        }),
+        stderr: ""
+      };
+    }
+  }, provider => provider.resolveVersion({
+    repoRoot,
+    providerConfig: { useDocker: true },
+    env: {}
+  }));
+
+  assertVersionFields(versionInfo, {
+    source: "gitversion",
+    version: "2.4.6-rc.1",
+    full: "2.4.6",
+    major: "2",
+    minor: "4",
+    build: "6",
+    suffix: "-rc.1"
+  });
+});
+
+test("gitversion provider supports dotnet-gitversion command on host", t => {
+  const repoRoot = createTempRepo(t);
+
+  writeText(path.join(repoRoot, "GitVersion.yml"), "next-version: 1.0.0\n");
+
+  const versionInfo = withMockedGitVersionProvider({
+    commandExists(command) {
+      if (command === "gitversion") {
+        return false;
+      }
+
+      return command === "dotnet-gitversion";
+    },
+    tryExec(command) {
+      assert.equal(command, "dotnet-gitversion");
+
+      return {
+        ok: true,
+        stdout: JSON.stringify({
+          FullSemVer: "1.2.0-t-gitversion-policy.47",
+          SemVer: "1.2.0-t-gitversion-policy.47",
+          MajorMinorPatch: "1.2.0",
+          Major: 1,
+          Minor: 2,
+          Patch: 0,
+          PreReleaseTagWithDash: "-t-gitversion-policy.47",
+          InformationalVersion: "1.2.0-t-gitversion-policy.47+Branch.topic-gitversion-policy.Sha.abc",
+          AssemblySemVer: "1.2.0.0"
+        }),
+        stderr: ""
+      };
+    }
+  }, provider => provider.resolveVersion({
+    repoRoot,
+    providerConfig: {},
+    env: {}
+  }));
+
+  assertVersionFields(versionInfo, {
+    source: "gitversion",
+    version: "1.2.0-t-gitversion-policy.47",
+    full: "1.2.0",
+    major: "1",
+    minor: "2",
+    build: "0",
+    suffix: "-t-gitversion-policy.47"
+  });
+});
+
+test("gitversion provider throws when command execution fails", t => {
+  const repoRoot = createTempRepo(t);
+
+  writeText(path.join(repoRoot, "GitVersion.yml"), "next-version: 1.0.0\n");
+
+  assert.throws(() => {
+    withMockedGitVersionProvider({
+      commandExists() {
+        return false;
+      },
+      tryExec() {
+        return {
+          ok: false,
+          stdout: "",
+          stderr: "failed"
+        };
+      }
+    }, provider => provider.resolveVersion({
+      repoRoot,
+      providerConfig: { useDocker: false },
+      env: {}
+    }));
+  }, /Failed to resolve version using GitVersion/);
+});
+
 test("version orchestration auto-detects nbgv before nodejs", t => {
   const repoRoot = createTempRepo(t);
 
@@ -500,6 +702,73 @@ test("version orchestration auto-detects nbgv before nodejs", t => {
         assemblyVersion: "6.7.0.0",
         informationalVersion: "6.7.8",
         nuGetPackageVersion: "6.7.8"
+      };
+    }
+  }, () => versionIndex.resolveVersion(context));
+
+  assertVersionFields(versionInfo, {
+    source: "nbgv",
+    version: "6.7.8"
+  });
+});
+
+test("version orchestration auto-detects gitversion before nodejs", t => {
+  const repoRoot = createTempRepo(t);
+
+  writeText(path.join(repoRoot, "GitVersion.yml"), "next-version: 1.0.0\n");
+  writeJson(path.join(repoRoot, "package.json"), {
+    name: SAMPLE_PACKAGE_NAME,
+    version: "9.9.9"
+  });
+
+  const context = versionIndex.buildContext(repoRoot);
+  const versionInfo = withMockedBundledProvider(GITVERSION_PROVIDER_PATH, {
+    resolveVersion() {
+      return {
+        source: "gitversion",
+        version: "3.1.4-beta.2",
+        full: "3.1.4",
+        major: "3",
+        minor: "1",
+        build: "4",
+        suffix: "-beta.2",
+        semVer2: "3.1.4-beta.2+10",
+        assemblyVersion: "",
+        informationalVersion: "",
+        nuGetPackageVersion: ""
+      };
+    }
+  }, () => versionIndex.resolveVersion(context));
+
+  assertVersionFields(versionInfo, {
+    source: "gitversion",
+    version: "3.1.4-beta.2"
+  });
+});
+
+test("version orchestration auto-detects nbgv before gitversion", t => {
+  const repoRoot = createTempRepo(t);
+
+  writeJson(path.join(repoRoot, "version.json"), {
+    version: "1.0"
+  });
+  writeText(path.join(repoRoot, "GitVersion.yml"), "next-version: 1.0.0\n");
+
+  const context = versionIndex.buildContext(repoRoot);
+  const versionInfo = withMockedBundledProvider(NBGV_PROVIDER_PATH, {
+    resolveVersion() {
+      return {
+        source: "nbgv",
+        version: "6.7.8",
+        full: "6.7.8",
+        major: "6",
+        minor: "7",
+        build: "8",
+        suffix: "",
+        semVer2: "6.7.8",
+        assemblyVersion: "",
+        informationalVersion: "",
+        nuGetPackageVersion: ""
       };
     }
   }, () => versionIndex.resolveVersion(context));
@@ -739,6 +1008,42 @@ test("version orchestration emits warning when auto-detected provider falls back
   }
 
   assert.match(stderr.join(""), /Auto-detected version provider 'dotnet' failed; retrying with 'env'/);
+});
+
+test("version orchestration falls back to env when gitversion is detected and fails", t => {
+  const repoRoot = createTempRepo(t);
+
+  writeText(path.join(repoRoot, "GitVersion.yml"), "next-version: 1.0.0\n");
+
+  const context = {
+    ...versionIndex.buildContext(repoRoot),
+    env: { DOCKSHIP_VERSION: "5.0.1-ci.3" }
+  };
+
+  const originalWrite = process.stderr.write;
+  const stderr = [];
+
+  process.stderr.write = chunk => {
+    stderr.push(String(chunk));
+    return true;
+  };
+
+  try {
+    const versionInfo = withMockedBundledProvider(GITVERSION_PROVIDER_PATH, {
+      resolveVersion() {
+        throw new Error("gitversion failed");
+      }
+    }, () => versionIndex.resolveVersion(context));
+
+    assertVersionFields(versionInfo, {
+      source: "env",
+      version: "5.0.1-ci.3"
+    });
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+
+  assert.match(stderr.join(""), /Auto-detected version provider 'gitversion' failed; retrying with 'env'/);
 });
 
 test("custom provider loaded from relative path is resolved against repoRoot", t => {

@@ -17,11 +17,11 @@ Source repository: [github.com/agile-north/dockship](https://github.com/agile-no
 
 `@agile-north/dockship` is a lightweight CLI tool that standardizes Docker container builds across projects. It handles:
 
-- **Semantic versioning** from multiple sources (Node.js, .NET, NBGV, custom providers)
+- **Semantic versioning** from multiple sources (Node.js, .NET, GitVersion, NBGV, custom providers)
 - **Multi-tag Docker builds** (version, major, major.minor, optional latest)
 - **Prerelease-aware tags**: `major` and `major.minor` tags preserve prerelease suffixes when present (`1.2.3-beta.1` → `1-beta.1`, `1.2-beta.1`)
 - **Registry push** with consistent tagging strategy
-- **Polyglot support** – Node.js, C#/.NET, NBGV, and extensible to any language
+- **Polyglot support** – Node.js, C#/.NET, GitVersion, NBGV, and extensible to any language
 - **Git-height versioning** – automatic build number from commit count
 
 Perfect for microservices, full-stack apps, and standardized CI/CD across teams.
@@ -760,14 +760,15 @@ Environment variable overrides (CI):
 
 ### Version Providers
 
-`version.provider` supports `"auto"`, `"nodejs"`, `"dotnet"`, `"nbgv"`, `"env"`, and any custom provider name.
+`version.provider` supports `"auto"`, `"nodejs"`, `"dotnet"`, `"gitversion"`, `"nbgv"`, `"env"`, and any custom provider name.
 
 When `version.provider` is `"auto"`, dockship uses this order:
 
 1. `version.json` → `nbgv`
-2. `package.json` → `nodejs`
-3. MSBuild and assembly metadata files → `dotnet`
-4. `DOCKSHIP_VERSION` env var → `env`
+2. `GitVersion.yml` → `gitversion`
+3. `package.json` → `nodejs`
+4. MSBuild and assembly metadata files → `dotnet`
+5. `DOCKSHIP_VERSION` env var → `env`
 
 If a provider selected by auto-detection fails to resolve a valid version, dockship will retry with `env` when `DOCKSHIP_VERSION` (or `version.env.version`) is available.
 
@@ -786,7 +787,7 @@ If no config file exists, dockship uses `"auto"` by default.
 
 | Setting | Type | Default | Description |
 | --- | --- | --- | --- |
-| `version.provider` | string | `auto` | Version provider name. Use `auto`, `nodejs`, `dotnet`, `nbgv`, `env`, or a custom provider name |
+| `version.provider` | string | `auto` | Version provider name. Use `auto`, `nodejs`, `dotnet`, `gitversion`, `nbgv`, `env`, or a custom provider name |
 | `version.<provider>.providerPackage` | string | empty | npm package name or path to load for custom providers. Relative paths (starting with `./` or `../`) are resolved from the client repo root. |
 
 #### Node.js provider options
@@ -831,6 +832,37 @@ If no config file exists, dockship uses `"auto"` by default.
     "dotnet": {
       "mode": "git-height",
       "autoDiscover": true
+    }
+  }
+}
+```
+
+#### GitVersion provider options
+
+The `gitversion` provider executes the GitVersion CLI and maps its JSON output into dockship version fields.
+
+When `allowGlobalCommand` is enabled, dockship will use either `gitversion` or `dotnet-gitversion` from the host PATH.
+
+| Setting | Type | Default | Description |
+| --- | --- | --- | --- |
+| `version.gitversion.configFile` | string | `GitVersion.yml` | File used to detect and run GitVersion in auto mode |
+| `version.gitversion.allowGlobalCommand` | boolean | `true` | Allows the global `gitversion` command on the host |
+| `version.gitversion.useDocker` | boolean | `false` | Allows Docker fallback execution when host `gitversion` is unavailable |
+| `version.gitversion.dockerImage` | string | `gittools/gitversion:6.0.0` | Docker image used when `useDocker` is `true` |
+| `version.gitversion.additionalArgs` | string[] | `[]` | Additional CLI args passed to GitVersion |
+
+#### GitVersion
+
+```json
+{
+  "version": {
+    "provider": "gitversion",
+    "gitversion": {
+      "configFile": "GitVersion.yml",
+      "allowGlobalCommand": true,
+      "useDocker": false,
+      "dockerImage": "gittools/gitversion:6.0.0",
+      "additionalArgs": []
     }
   }
 }
@@ -933,6 +965,7 @@ Appends Git commit count to semantic versions for unique build identifiers:
 | --- | --- | --- |
 | **nodejs** | `package.json` | `package.json` exists at repo root |
 | **dotnet** | `.csproj` / `.vbproj` / `.fsproj` / `Directory.Build.props` / `AssemblyInfo.*` / `VersionInfo.*` | Any of those files are found |
+| **gitversion** | GitVersion CLI | `GitVersion.yml` exists at repo root |
 | **nbgv** | Nerdbank.GitVersioning | `version.json` exists at repo root |
 | **env** | `DOCKSHIP_VERSION` env var or inline config | `DOCKSHIP_VERSION` is set (last in chain), or a previously selected auto provider fails and env version input is available |
 
