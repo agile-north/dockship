@@ -13,6 +13,7 @@ lib/version/fs.cjs               ← File system helpers (findRepoRoot, readJson
 lib/version/process.cjs          ← Process helpers (tryExec, commandExists)
 lib/version/providers/nodejs/    ← Built-in: reads package.json
 lib/version/providers/dotnet/    ← Built-in: reads .csproj/.vbproj/.fsproj, Directory.Build.props/targets, AssemblyInfo/VersionInfo (cs/vb/fs)
+lib/version/providers/gitversion/← Built-in: delegates to GitVersion CLI
 lib/version/providers/nbgv/      ← Built-in: delegates to Nerdbank.GitVersioning CLI
 lib/version/providers/env/       ← Built-in: reads version from DOCKSHIP_VERSION env var or inline config
 test/version-providers.test.cjs  ← Provider + orchestrator tests
@@ -108,10 +109,11 @@ Required fields on the returned object: `source`, `version`, `full`, `major`, `m
 **Auto-detection chain** (in `lib/version/index.cjs` `detectProviderName`, tried in order):
 
 1. `version.json` present → `nbgv`
-2. `package.json` present → `nodejs`
-3. MSBuild/assembly files present → `dotnet`
-4. `DOCKSHIP_VERSION` env var set (or `version.env.version` in config) → `env`
-5. None found → throws "Could not auto-detect version provider"
+2. `GitVersion.yml` present → `gitversion`
+3. `package.json` present → `nodejs`
+4. MSBuild/assembly files present → `dotnet`
+5. `DOCKSHIP_VERSION` env var set (or `version.env.version` in config) → `env`
+6. None found → throws "Could not auto-detect version provider"
 
 When running in `auto` mode, if the selected provider throws while resolving version info, dockship retries with `env` if `DOCKSHIP_VERSION` (or `version.env.version`) is available.
 
@@ -123,7 +125,7 @@ When running in `auto` mode, if the selected provider throws while resolving ver
    - Relative paths (`./…` or `../…`) are resolved against `context.repoRoot` so consumer repos can reference local files portably
    - All other values (npm package names, absolute paths) are passed to `require()` unchanged
 
-The `nodejs` and `dotnet` providers are **self-contained** (inline all helpers). The `nbgv` and `env` providers re-use the shared `fs.cjs`, `process.cjs`, and `model.cjs` modules. Match this pattern when adding new built-in providers. Likely future built-in providers: `python`, `gradle`, `maven`, `go`, `rust`.
+The `nodejs` and `dotnet` providers are **self-contained** (inline all helpers). The `gitversion`, `nbgv`, and `env` providers re-use the shared `fs.cjs`, `process.cjs`, and `model.cjs` modules. Match this pattern when adding new built-in providers. Likely future built-in providers: `python`, `gradle`, `maven`, `go`, `rust`.
 
 ## Adding a new built-in provider — checklist
 
