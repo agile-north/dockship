@@ -400,6 +400,7 @@ Configuration precedence is:
 | `docker.push.branchesShortcut` | string | empty | none | Shortcut for push branch allow-list using comma/semicolon/newline delimiters |
 | `docker.push.denyNonPublicPush` | boolean | `false` | none | When `true`, non-public classified builds are not pushed |
 | `docker.tags.latest` | boolean | `false` | `DOCKER_TAG_LATEST` | Adds the `latest` tag in addition to semantic tags |
+| `docker.tags.stripPreReleaseNumber` | boolean | `true` | none | When `true`, strips the trailing commit-count number from the prerelease suffix on moving tags only. The full version tag is unaffected. Example: `1.2.3-beta.2` produces tags `1.2.3-beta.2`, `1-beta`, `1.2-beta`. Set to `false` to preserve `1-beta.2` and `1.2-beta.2`. |
 | `docker.tagPolicy.public` | string[] | `full,majorMinor,major` | none | Tag kinds for public builds (`full`, `majorMinor`, `major`, `latest`) |
 | `docker.tagPolicy.nonPublic` | string[] | `full,majorMinor,major` | none | Tag kinds for non-public builds |
 | `docker.nonPublicMode` | string | empty | none | `full-only` emits only the full version tag for non-public builds |

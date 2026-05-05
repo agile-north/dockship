@@ -178,7 +178,7 @@ test("tags command returns version, major, major.minor, and latest", t => {
   assert.deepEqual(JSON.parse(result.stdout), ["1.2.3", "1", "1.2", "latest"]);
 });
 
-test("tags command preserves prerelease suffixes for major and major.minor tags", t => {
+test("tags command strips prerelease number from moving tags by default", t => {
   const repoRoot = createTempRepo(t);
 
   seedNodeRepo(repoRoot, "1.2.3-beta.1");
@@ -186,7 +186,26 @@ test("tags command preserves prerelease suffixes for major and major.minor tags"
   const result = runNodeScript(CLI_PATH, ["tags"], { cwd: repoRoot });
 
   assert.equal(result.status, 0, result.stderr || "Expected cli tags command to succeed");
-  assert.deepEqual(JSON.parse(result.stdout), ["1.2.3-beta.1", "1-beta.1", "1.2-beta.1"]);
+  assert.deepEqual(JSON.parse(result.stdout), ["1.2.3-beta.1", "1-beta", "1.2-beta"]);
+});
+
+test("tags command preserves prerelease suffixes for moving tags when docker.tags.stripPreReleaseNumber is false", t => {
+  const repoRoot = createTempRepo(t);
+
+  seedNodeRepo(repoRoot, "1.2.3-beta.2");
+
+  writeJson(path.join(repoRoot, ".dockship", "dockship.json"), {
+    docker: {
+      tags: {
+        stripPreReleaseNumber: false
+      }
+    }
+  });
+
+  const result = runNodeScript(CLI_PATH, ["tags"], { cwd: repoRoot });
+
+  assert.equal(result.status, 0, result.stderr || "Expected cli tags command to succeed");
+  assert.deepEqual(JSON.parse(result.stdout), ["1.2.3-beta.2", "1-beta.2", "1.2-beta.2"]);
 });
 
 test("tags command uses standard defaults when alias policy is not configured", t => {
@@ -608,11 +627,11 @@ test("tags command supports suffixed versions with alias tag transforms", t => {
     const tags = JSON.parse(result.stdout);
 
     assert.ok(tags.includes("release-1.2.3-beta.1-topic-auth"));
-    assert.ok(tags.includes("release-1-beta.1-topic-auth"));
-    assert.ok(tags.includes("release-1.2-beta.1-topic-auth"));
+  assert.ok(tags.includes("release-1-beta-topic-auth"));
+  assert.ok(tags.includes("release-1.2-beta-topic-auth"));
     assert.ok(!tags.includes("1.2.3-beta.1-release-topic-auth"));
-    assert.ok(!tags.includes("1-beta.1-release-topic-auth"));
-    assert.ok(!tags.includes("1.2-beta.1-release-topic-auth"));
+  assert.ok(!tags.includes("1-beta-release-topic-auth"));
+  assert.ok(!tags.includes("1.2-beta-release-topic-auth"));
 });
 
 test("tags command applies global alias sanitize to semantic tag transforms", t => {

@@ -2111,6 +2111,9 @@ function getTagKindsForBuildType(settings, buildType) {
 function getTagComputation(version, settings) {
   const buildType = evaluateBuildType(version, settings);
   const effectiveSuffix = getEffectiveSuffix(version, buildType);
+  const movingTagSuffix = settings.stripMovingTagPreReleaseNumber
+    ? effectiveSuffix.replace(/\.\d+$/, "")
+    : effectiveSuffix;
   const tagKinds = getTagKindsForBuildType(settings, buildType);
   const baseTags = [];
 
@@ -2121,11 +2124,11 @@ function getTagComputation(version, settings) {
   }
 
   if (tagKinds.includes(TAG_KIND_MAJOR) && version.major) {
-    pushUnique(baseTags, `${version.major}${effectiveSuffix}`);
+    pushUnique(baseTags, `${version.major}${movingTagSuffix}`);
   }
 
   if (tagKinds.includes(TAG_KIND_MAJOR_MINOR) && version.major && version.minor) {
-    pushUnique(baseTags, `${version.major}.${version.minor}${effectiveSuffix}`);
+    pushUnique(baseTags, `${version.major}.${version.minor}${movingTagSuffix}`);
   }
 
   const aliasComputation = getAliasComputation(version, settings, buildType);
@@ -2256,6 +2259,7 @@ function getDockerSettings(config, env, repoRoot, options = {}) {
     buildOutputFlags: resolveBuildOutput(env, docker),
     buildArgFlags: resolveBuildArgs(env, docker),
     buildSecretFlags: resolveBuildSecrets(env, docker),
+    stripMovingTagPreReleaseNumber: normalizeBool(tags.stripPreReleaseNumber, true)
   };
 }
 
