@@ -627,11 +627,11 @@ test("tags command supports suffixed versions with alias tag transforms", t => {
     const tags = JSON.parse(result.stdout);
 
     assert.ok(tags.includes("release-1.2.3-beta.1-topic-auth"));
-    assert.ok(tags.includes("release-1-beta.1-topic-auth"));
-    assert.ok(tags.includes("release-1.2-beta.1-topic-auth"));
+  assert.ok(tags.includes("release-1-beta-topic-auth"));
+  assert.ok(tags.includes("release-1.2-beta-topic-auth"));
     assert.ok(!tags.includes("1.2.3-beta.1-release-topic-auth"));
-    assert.ok(!tags.includes("1-beta.1-release-topic-auth"));
-    assert.ok(!tags.includes("1.2-beta.1-release-topic-auth"));
+  assert.ok(!tags.includes("1-beta-release-topic-auth"));
+  assert.ok(!tags.includes("1.2-beta-release-topic-auth"));
 });
 
 test("tags command applies global alias sanitize to semantic tag transforms", t => {
